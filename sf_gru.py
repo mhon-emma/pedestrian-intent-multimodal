@@ -25,8 +25,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+import os
 import time
 import pickle
+import re
 
 from utils import *
 
@@ -77,6 +79,14 @@ class SFGRU(object):
         self._regularizer_value = regularizer_val
         self._regularizer = regularizers.l2(regularizer_val)
         self._global_pooling = global_pooling
+
+    def _parse_pose_cache_name(self, file_name):
+        match = re.match(r'^pose_(set\d+)(?:_(.+))?\.pkl$', file_name)
+        if not match:
+            return None
+        set_id = match.group(1)
+        backend = (match.group(2) or 'openpose').lower()
+        return set_id, backend
 
     # Processing images anf generate features
     def load_images_crop_and_process(self, img_sequences, bbox_sequences,
@@ -217,16 +227,42 @@ class SFGRU(object):
         print('Getting poses %s' % data_type)
         print('#####################################')
         poses_all = []
+        preferred_backend = os.environ.get('PIE_POSE_BACKEND', 'yolo').strip().lower() or 'yolo'
         set_poses_list = os.listdir(file_path)
         set_poses = {}
-        for s in set_poses_list:
-            with open(os.path.join(file_path, s), 'rb') as fid:
+        pose_sources = {}
+        pose_files_by_set = {}
+        for s in sorted(set_poses_list):
+            pose_meta = self._parse_pose_cache_name(s)
+            if pose_meta is None:
+                continue
+            set_id, backend = pose_meta
+            pose_files_by_set.setdefault(set_id, []).append((backend, s))
+
+        for set_id in sorted(pose_files_by_set.keys()):
+            candidates = pose_files_by_set[set_id]
+            chosen = None
+            for backend, file_name in candidates:
+                if backend == preferred_backend:
+                    chosen = (backend, file_name)
+                    break
+            if chosen is None:
+                for backend, file_name in candidates:
+                    if backend == 'openpose':
+                        chosen = (backend, file_name)
+                        break
+            if chosen is None:
+                chosen = candidates[0]
+
+            backend, file_name = chosen
+            with open(os.path.join(file_path, file_name), 'rb') as fid:
                 try:
                     p = pickle.load(fid)
                 except:
                     p = pickle.load(fid, encoding='bytes')
-            set_poses[s.split('.pkl')[0].split('_')[-1]] = p
-        print(set_poses.keys())
+            set_poses[set_id] = p
+            pose_sources[set_id] = '%s (%s)' % (file_name, backend)
+        print(pose_sources)
         i = -1
         for seq, pid in zip(img_sequences, ped_ids):
             i += 1
