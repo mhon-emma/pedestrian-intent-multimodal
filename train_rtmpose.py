@@ -12,9 +12,9 @@ import os, sys, pickle, types, logging
 import numpy as np
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SFGRU_DIR    = '/media/emma/data/MMML/SF-GRU'
-PIE_UTIL_DIR = '/media/emma/data/MMML/PIE/utilities'
-PIE_DATA_DIR = '/media/emma/data/MMML/PIE_data'
+SFGRU_DIR    = '/home/teamj/Documents/MMML/pedestrian-intent-multimodal'
+PIE_UTIL_DIR = '/home/teamj/Documents/MMML/PIE/utilities'
+PIE_DATA_DIR = '/home/teamj/Documents/MMML/PIE_data'
 RESULTS_DIR  = os.path.join(SFGRU_DIR, 'results')
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -122,14 +122,104 @@ def _set03_only(self, image_set):
 
 _PIE_cls._get_image_set_ids = _set03_only
 
+# ── Patch jitter_bbox to avoid loading PNG (use known PIE image dimensions) ──
+import utils as _utils_mod
+_orig_jitter_bbox = _utils_mod.jitter_bbox
+
+def _jitter_bbox_no_imread(img_path, bbox, mode, ratio):
+    """Drop-in replacement that skips load_img — PIE frames are always 1920×1080."""
+    import numpy as _np2
+    from utils import bbox_sanity_check
+
+    if mode == 'same':
+        return bbox
+
+    if mode in ['random_enlarge', 'enlarge']:
+        jitter_ratio = abs(ratio)
+    else:
+        jitter_ratio = ratio
+
+    if mode == 'random_enlarge':
+        jitter_ratio = _np2.random.random_sample() * jitter_ratio
+    elif mode == 'random_move':
+        jitter_ratio = _np2.random.random_sample() * jitter_ratio * 2 - jitter_ratio
+
+    img_size = (1920, 1080)  # PIE dataset is always 1920×1080
+    jit_boxes = []
+    for b in bbox:
+        bbox_width  = b[2] - b[0]
+        bbox_height = b[3] - b[1]
+        width_change  = bbox_width  * jitter_ratio
+        height_change = bbox_height * jitter_ratio
+        if width_change < height_change:
+            height_change = width_change
+        else:
+            width_change = height_change
+        if mode in ['enlarge', 'random_enlarge']:
+            b[0] = b[0] - width_change  // 2
+            b[1] = b[1] - height_change // 2
+        else:
+            b[0] = b[0] + width_change  // 2
+            b[1] = b[1] + height_change // 2
+        b[2] = b[2] + width_change  // 2
+        b[3] = b[3] + height_change // 2
+        b = bbox_sanity_check(img_size, b)
+        jit_boxes.append(b)
+    return jit_boxes
+
+_utils_mod.jitter_bbox = _jitter_bbox_no_imread
+# also patch the reference already imported inside sf_gru
+import sf_gru as _sfgru_mod2
+_sfgru_mod2.jitter_bbox = _jitter_bbox_no_imread
+
 # ── Patch load_images_crop_and_process to use non-flip cache for flipped seqs ─
 import numpy as _np
+import cv2 as _cv2
+from PIL import Image as _PIL_Image
+from keras.preprocessing.image import img_to_array as _img_to_array
+from keras.applications import vgg16 as _vgg16_mod
+
+# Lazy-initialised VGG16 — built once on first cache miss
+_convnet = None
+
+def _get_convnet():
+    global _convnet
+    if _convnet is None:
+        _convnet = _vgg16_mod.VGG16(input_shape=(224, 224, 3),
+                                    include_top=False, weights='imagenet')
+    return _convnet
+
+def _frame_from_video(set_id, vid_id, frame_num):
+    """Read one frame from the mp4 file; returns an RGB PIL Image."""
+    video_path = os.path.join('/home/teamj/Documents/MMML/Data',
+                              set_id, vid_id + '.mp4')
+    cap = _cv2.VideoCapture(video_path)
+    cap.set(_cv2.CAP_PROP_POS_FRAMES, frame_num)
+    ret, bgr = cap.read()
+    cap.release()
+    if not ret:
+        raise RuntimeError(f'Cannot read frame {frame_num} from {video_path}')
+    return _PIL_Image.fromarray(_cv2.cvtColor(bgr, _cv2.COLOR_BGR2RGB))
+
+def _compute_and_cache_vgg16(img_data, save_path):
+    """Run VGG16 on a 224×224 PIL image and pickle the (1,7,7,512) output."""
+    convnet = _get_convnet()
+    arr = _img_to_array(img_data)
+    arr = _vgg16_mod.preprocess_input(arr)
+    feat = convnet.predict(_np.expand_dims(arr, axis=0), verbose=0)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, 'wb') as fid:
+        import pickle as _pkl2
+        _pkl2.dump(feat, fid, protocol=2)
+    return feat
+
 _orig_load = _sfgru_mod.SFGRU.load_images_crop_and_process
 
 def _safe_load_images(self, img_sequences, bbox_sequences, ped_ids, save_path,
                       data_type='train', crop_type='none', crop_mode='warp',
                       crop_resize_ratio=2, regen_data=False):
     import pickle as _pkl
+    from sf_gru import img_pad, jitter_bbox, squarify
     bbox_seq = bbox_sequences.copy()
     sequences = []
     for i, (seq, pid) in enumerate(zip(img_sequences, ped_ids)):
@@ -157,9 +247,9 @@ def _safe_load_images(self, img_sequences, bbox_sequences, ped_ids, save_path,
             load_path = None
             if os.path.exists(img_save_path) and not regen_data:
                 load_path = img_save_path
-                flip_image = False  # already flipped if stored
+                flip_image = False  # already stored flipped
             elif flip_image and os.path.exists(noflip_path) and not regen_data:
-                load_path = noflip_path  # load non-flip, flip below
+                load_path = noflip_path  # load non-flip, flip feature map below
 
             if load_path:
                 with open(load_path, 'rb') as fid:
@@ -167,36 +257,49 @@ def _safe_load_images(self, img_sequences, bbox_sequences, ped_ids, save_path,
                     except: feat = _pkl.load(fid, encoding='bytes')
                 if flip_image:
                     feat = feat[:, :, ::-1, :]  # horizontal flip of (1, H, W, C)
-                # Apply same pooling as original load_images_crop_and_process
-                if self._global_pooling == 'max':
-                    feat = _np.squeeze(feat)
-                    feat = _np.amax(feat, axis=0)
-                    feat = _np.amax(feat, axis=0)
-                elif self._global_pooling == 'avg':
-                    feat = _np.squeeze(feat)
-                    feat = _np.average(feat, axis=0)
-                    feat = _np.average(feat, axis=0)
-                else:
-                    feat = feat.ravel()
-                img_seq.append(feat)
             else:
-                # Fall back to original method (needs raw image)
-                # This should only happen for truly uncached non-flip frames
-                from keras.preprocessing.image import load_img, img_to_array
-                actual_imp = imp.replace('_flip', '') if flip_image else imp
-                from PIL import Image
-                img_data = load_img(actual_imp)
+                # No cached pkl — read frame from video, run VGG16, cache result
+                frame_num = int(img_name_noflip)
+                img_data = _frame_from_video(set_id, vid_id, frame_num)
                 if flip_image:
-                    img_data = img_data.transpose(Image.FLIP_LEFT_RIGHT)
-                from sf_gru import img_pad, jitter_bbox, squarify
-                if crop_type == 'bbox':
+                    img_data = img_data.transpose(_PIL_Image.FLIP_LEFT_RIGHT)
+
+                if crop_type == 'none':
+                    img_data = img_data.resize((224, 224))
+                elif crop_type == 'bbox':
                     cropped = img_data.crop(list(map(int, b[0:4])))
                     img_data = img_pad(cropped, mode=crop_mode, size=224)
-                feat = img_to_array(img_data) / 255.0
-                os.makedirs(os.path.dirname(img_save_path), exist_ok=True)
-                with open(img_save_path, 'wb') as fid:
-                    _pkl.dump(feat, fid)
-                img_seq.append(feat)
+                elif 'context' in crop_type:
+                    bbox = jitter_bbox(imp, [b], 'enlarge', crop_resize_ratio)[0]
+                    bbox = squarify(bbox, 1, img_data.size[0])
+                    bbox = list(map(int, bbox[0:4]))
+                    img_data = img_pad(img_data.crop(bbox), mode='pad_resize', size=224)
+                elif 'surround' in crop_type:
+                    b_org = list(map(int, b[0:4]))
+                    bbox = jitter_bbox(imp, [b], 'enlarge', crop_resize_ratio)[0]
+                    bbox = squarify(bbox, 1, img_data.size[0])
+                    from PIL import ImageDraw as _IDraw
+                    draw = _IDraw.Draw(img_data)
+                    draw.rectangle(b_org, fill=(128, 128, 128))
+                    del draw
+                    img_data = img_pad(img_data.crop(list(map(int, bbox[0:4]))),
+                                       mode='pad_resize', size=224)
+
+                feat = _compute_and_cache_vgg16(img_data, noflip_path)
+
+            # Pool spatial dims down to a vector
+            if self._global_pooling == 'max':
+                feat = _np.squeeze(feat)
+                feat = _np.amax(feat, axis=0)
+                feat = _np.amax(feat, axis=0)
+            elif self._global_pooling == 'avg':
+                feat = _np.squeeze(feat)
+                feat = _np.average(feat, axis=0)
+                feat = _np.average(feat, axis=0)
+            else:
+                feat = feat.ravel()
+
+            img_seq.append(feat)
         sequences.append(img_seq)
     return _np.array(sequences)
 
