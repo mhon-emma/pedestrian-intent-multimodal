@@ -102,7 +102,8 @@ venv.bak/
 
 # mypy
 .mypy_cache/
-data/features/pie/poses/*.pkl
-data/features/pie/local_box/
-data/features/pie/local_context/
+
+# Generated feature/pose caches (regenerable via extraction scripts; too
+# large for git, some individual files exceed GitHub's 100MB hard limit)
+data/features/
 data/models/
