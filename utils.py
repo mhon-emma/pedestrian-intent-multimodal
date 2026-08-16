@@ -4,7 +4,11 @@ import os
 
 import numpy as np
 
-from keras.preprocessing.image import load_img
+from PIL import Image as _PILImage
+
+
+def load_img(path):
+	return _PILImage.open(path)
 
 
 def jitter_bbox(img_path, bbox, mode, ratio):
