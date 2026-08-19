@@ -1,10 +1,26 @@
 """
-train_full_pie.py
-=================
-Trains SF-GRU (PyTorch backend, see sf_gru_torch.py) on the standard PIE
-split, evaluated on the held-out test set. Runs N_SEEDS independent trials
-to report mean +/- std, matching the evaluation protocol of the original
-SF-GRU paper.
+train_full_pie_fusion.py
+==========================
+Trains the new proposed fusion architectures (sf_gru_torch_fusion.py) on the
+standard full PIE split, evaluated on the held-out test set. Mirrors
+train_full_pie_attention.py's protocol exactly so results are directly
+comparable to the existing SF-GRU baseline and 5 attention variants.
+
+Proposed to address the pattern seen in the pose_backend x architecture
+sweep: pose_attention/modality_fusion win on PIE while cross_modal/
+other_modal win on JAAD -- none of the existing architectures let the model
+learn to trust a modality conditionally. Each variant below tests a
+different mechanism for that:
+
+  gated_fusion   GatedFusionSFGRU -- per-modality learned scalar gate
+                 (Gated Multimodal Unit) scales each modality's encoding
+                 before concatenation
+  cross_attn     CrossAttentionSFGRU -- one modality (default 'box') anchors
+                 the query; all others serve as key/value context, instead
+                 of symmetric self-attention across all modalities
+  uncertainty    UncertaintyWeightedFusionSFGRU -- each modality predicts its
+                 own log-variance; modalities are fused by inverse-variance
+                 (softmax(-log_var)) weighting
 
 Standard PIE split
 ------------------
@@ -12,19 +28,15 @@ Standard PIE split
   val   : set05, set06
   test  : set03
 
-Pose backends available: 'rtmpose' (all sets) or 'none' (zeroed, ablation
-baseline). OpenPose poses only exist for set03, so a full-split OpenPose
-run would train with zero real poses -- see train_rtmpose.py for the
-within-set03 RTMPose vs OpenPose comparison instead.
-
 Usage
 -----
-  python train_full_pie.py --seeds 3 --backend rtmpose
-  python train_full_pie.py --seeds 3 --backend none
+  python train_full_pie_fusion.py --architecture gated_fusion --seeds 3 --backend rtmpose
+  python train_full_pie_fusion.py --architecture cross_attn --seeds 3 --backend rtmpose
+  python train_full_pie_fusion.py --architecture uncertainty --seeds 3 --backend rtmpose
 
 Output
 ------
-  results/full_pie_results_<backend>.pkl
+  results/full_pie_fusion_<architecture>_<backend>.pkl
 """
 
 import argparse
@@ -52,11 +64,17 @@ os.chdir(SFGRU_DIR)
 
 import sf_gru_torch as _sfgru_mod
 from pie_data import PIE
-from sf_gru_torch import SFGRUTorch
-from sklearn.metrics import (accuracy_score, f1_score, precision_score,
-                             recall_score, roc_auc_score)
+from sf_gru_torch_fusion import (CrossAttentionSFGRU, GatedFusionSFGRU,
+                                 UncertaintyWeightedFusionSFGRU)
+
+ARCHITECTURES = {
+    'gated_fusion': lambda: GatedFusionSFGRU(),
+    'cross_attn':   lambda: CrossAttentionSFGRU(anchor='box'),
+    'uncertainty':  lambda: UncertaintyWeightedFusionSFGRU(),
+}
 
 # -- get_pose with graceful zero-fallback on missing sets/frames ---------------
+# (identical to train_full_pie.py's version -- same pose caches, same lookup)
 def _safe_get_pose(self, img_sequences, ped_ids, file_path, data_type='train'):
     import re
     preferred_backend = os.environ.get('PIE_POSE_BACKEND', 'rtmpose').strip().lower()
@@ -100,14 +118,7 @@ def _safe_get_pose(self, img_sequences, ped_ids, file_path, data_type='train'):
                 flip_image = True
             total += 1
             vid_poses = set_poses.get(set_id, {}).get(vid_id, {})
-            # OpenPose-style cache key: frame_<ped_id> (ped_id already
-            # includes set/vid, e.g. '3_4_344' -> '01379_3_4_344').
             k = img_name + '_' + p[0]
-            # RTMPose-style cache key (extract_rtmpose.py): an extra
-            # set_num/vid_num segment is inserted before ped_id, e.g.
-            # frame='01013', set_id='set01' -> set_num='1',
-            # vid_id='video_0001' -> vid_num='0001', ped_id='1_1_1'
-            # -> '01013_1_0001_1_1_1'.
             if k not in vid_poses:
                 set_num = set_id.replace('set', '').lstrip('0') or '0'
                 vid_num = vid_id.replace('video_', '')
@@ -148,7 +159,7 @@ _sfgru_mod.get_path = _patched_get_path
 DATA_OPTS = {
     'fstride': 1,
     'subset': 'default',
-    'data_split_type': 'random',   # train=set01+02+04, val=set05+06, test=set03
+    'data_split_type': 'default',   # train=set01+02+04, val=set05+06, test=set03
     'seq_type': 'crossing',
     'min_track_size': 75,
 }
@@ -175,15 +186,7 @@ def summarise(runs):
     }
 
 
-def run_one_seed(seed, pose_backend, model_save_name, experiment_label=None, lr=3e-5):
-    """
-    pose_backend: which cached pose file to look up (only matters for the
-        PIE_POSE_BACKEND env var / file selection in get_pose).
-    experiment_label: the actual experiment condition (e.g. 'none' for the
-        zeroed-pose ablation) -- what gets logged/recorded, since
-        pose_backend is always a real backend name ('rtmpose') even when the
-        pose values get zeroed out afterwards by main()'s _zero_pose patch.
-    """
+def run_one_seed(seed, architecture, pose_backend, experiment_label=None):
     if experiment_label is None:
         experiment_label = pose_backend
     torch.manual_seed(seed)
@@ -192,39 +195,32 @@ def run_one_seed(seed, pose_backend, model_save_name, experiment_label=None, lr=
     os.environ['PIE_POSE_BACKEND'] = pose_backend
     imdb = PIE(data_path=PIE_DATA_DIR)
 
-    log.info('=== seed=%d  experiment=%s (pose_cache=%s) ===', seed, experiment_label, pose_backend)
+    log.info('=== arch=%s seed=%d  experiment=%s (pose_cache=%s) ===',
+             architecture, seed, experiment_label, pose_backend)
 
     beh_train = imdb.generate_data_trajectory_sequence('train', **DATA_OPTS)
-    beh_val   = imdb.generate_data_trajectory_sequence('val', **DATA_OPTS)
-    method = SFGRUTorch()
+    method = ARCHITECTURES[architecture]()
 
-    saved_files_path = method.train(
-        beh_train,
-        data_val=beh_val,
-        batch_size=32,
-        epochs=100,
-        lr=lr,
-        model_opts=MODEL_OPTS
-    )
+    saved_files_path = method.train(beh_train, model_opts=MODEL_OPTS)
 
     beh_test = imdb.generate_data_trajectory_sequence('test', **DATA_OPTS)
     acc, auc, f1, prec, rec = method.test(beh_test, saved_files_path)
     metrics = {'acc': acc, 'auc': auc, 'f1': f1, 'prec': prec, 'rec': rec,
-               'seed': seed, 'backend': experiment_label}
-    log.info('seed=%d  experiment=%s  Acc=%.4f  AUC=%.4f  F1=%.4f', seed, experiment_label, acc, auc, f1)
+               'seed': seed, 'backend': experiment_label, 'architecture': architecture}
+    log.info('arch=%s seed=%d  experiment=%s  Acc=%.4f  AUC=%.4f  F1=%.4f',
+             architecture, seed, experiment_label, acc, auc, f1)
     return metrics
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--architecture', required=True, choices=list(ARCHITECTURES.keys()))
     parser.add_argument('--seeds', type=int, default=3,
                         help='Number of independent training runs (default 3)')
     parser.add_argument('--backend', default='rtmpose',
                         choices=['rtmpose', 'openpose', 'none'],
                         help='Pose backend (default: rtmpose). "none" zeroes '
                              'the pose input for the ablation baseline.')
-    parser.add_argument('--lr', type=float, default=3e-5,
-                        help='Learning rate')
     args = parser.parse_args()
 
     if args.backend == 'none':
@@ -233,35 +229,34 @@ def main():
             poses = orig_get_pose(self, img_sequences, ped_ids, file_path, data_type)
             return np.zeros_like(poses)
         _sfgru_mod.SFGRUTorch.get_pose = _zero_pose
-        pose_env_backend = 'rtmpose'  # any value; file lookup only used for shape
+        pose_env_backend = 'rtmpose'  # any real backend name; file lookup only used for shape
     else:
         pose_env_backend = args.backend
 
     runs = []
     for seed in range(args.seeds):
-        m = run_one_seed(seed, pose_env_backend, f'sf-rnn-{args.backend}-full',
-                         experiment_label=args.backend, lr=args.lr)
+        m = run_one_seed(seed, args.architecture, pose_env_backend, experiment_label=args.backend)
         runs.append(m)
 
     summary = summarise(runs)
-    log.info('\n%s (n=%d):  Acc %.4f+/-%.4f  AUC %.4f+/-%.4f  F1 %.4f+/-%.4f',
-             args.backend, summary['n'],
+    log.info('\n%s/%s (n=%d):  Acc %.4f+/-%.4f  AUC %.4f+/-%.4f  F1 %.4f+/-%.4f',
+             args.architecture, args.backend, summary['n'],
              summary['acc_mean'], summary['acc_std'],
              summary['auc_mean'], summary['auc_std'],
              summary['f1_mean'],  summary['f1_std'])
 
-    out = os.path.join(RESULTS_DIR, f'full_pie_results_{args.backend}.pkl')
+    out = os.path.join(RESULTS_DIR, f'full_pie_fusion_{args.architecture}_{args.backend}.pkl')
     with open(out, 'wb') as f:
         pickle.dump({'runs': runs, 'summary': summary}, f)
     log.info('Saved: %s', out)
 
-    print('\n' + '=' * 62)
-    print(f'{"Backend":<14} {"Acc":>8} {"+/-":>5} {"AUC":>8} {"+/-":>5} {"F1":>8} {"+/-":>5}')
-    print('-' * 62)
-    print(f'{args.backend:<14} {summary["acc_mean"]:>8.4f} {summary["acc_std"]:>5.4f} '
+    print('\n' + '=' * 78)
+    print(f'{"Architecture":<18} {"Backend":<10} {"Acc":>8} {"+/-":>5} {"AUC":>8} {"+/-":>5} {"F1":>8} {"+/-":>5}')
+    print('-' * 78)
+    print(f'{args.architecture:<18} {args.backend:<10} {summary["acc_mean"]:>8.4f} {summary["acc_std"]:>5.4f} '
           f'{summary["auc_mean"]:>8.4f} {summary["auc_std"]:>5.4f} '
           f'{summary["f1_mean"]:>8.4f} {summary["f1_std"]:>5.4f}')
-    print('=' * 62)
+    print('=' * 78)
 
 
 if __name__ == '__main__':

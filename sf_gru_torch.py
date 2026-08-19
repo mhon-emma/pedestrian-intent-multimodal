@@ -551,7 +551,7 @@ class SFGRUTorch(object):
                           self._regularizer_value).to(self.device)
 
     # -- Train ---------------------------------------------------------------------
-    def train(self, data_train, batch_size=32, epochs=60, lr=0.000005, model_opts=None):
+    def train(self, data_train, data_val=None, batch_size=32, epochs=60, lr=0.000005, model_opts=None):
         # PID suffix avoids collisions when multiple training processes (e.g.
         # separate experiments) start within the same second and would
         # otherwise land on the same save_folder and clobber each other's
@@ -561,20 +561,39 @@ class SFGRUTorch(object):
                                          save_root_folder='data/models',
                                          file_name='model.pt')
 
-        train_val_data, data_types, data_sizes = self.get_data({'train': data_train}, model_opts)
-        train_data = train_val_data['train']
+        # train_val_data, data_types, data_sizes = self.get_data({'train': data_train, 'val': data_val}, model_opts)
+        data_dict = {'train': data_train}
+        if data_val is not None:
+            data_dict['val'] = data_val
+        train_val_data, data_types, data_sizes = self.get_data(data_dict, model_opts)
 
+        train_data = train_val_data['train']
+        val_data = train_val_data['val'] if data_val is not None else None
         model = self.build_model(data_types, data_sizes)
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=self._regularizer_value)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=self._regularizer_value)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6
+        )
         criterion = nn.BCELoss()
 
         inputs = [torch.from_numpy(np.asarray(x)).float() for x in train_data[0]]
         labels = torch.from_numpy(np.asarray(train_data[1])).float()
 
+        if val_data is not None:
+            val_inputs = [torch.from_numpy(np.asarray(x)).float().to(self.device) for x in val_data[0]]
+            val_labels = torch.from_numpy(np.asarray(val_data[1])).float().to(self.device)      
+
+        best_val_auc = -float('inf')
+        best_epoch = -1
+
         n = labels.shape[0]
-        history = {'loss': [], 'accuracy': []}
-        model.train()
+        history = {'loss': [], 'accuracy': [], 'val_loss': [], 'val_accuracy': [], 'val_auc': []}
         for epoch in range(epochs):
+            model.train()
             perm = torch.randperm(n)
             epoch_loss = 0.0
             epoch_correct = 0
@@ -595,17 +614,53 @@ class SFGRUTorch(object):
             epoch_loss /= n
             epoch_acc = epoch_correct / n
             history['loss'].append(epoch_loss)
-            history['accuracy'].append(epoch_acc)
-            print('Epoch %d/%d - loss: %.4f - accuracy: %.4f' % (epoch + 1, epochs, epoch_loss, epoch_acc))
+            history['accuracy'].append(epoch_acc)\
 
-        print('Train model is saved to {}'.format(model_path))
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'data_types': data_types,
-            'data_sizes': data_sizes,
-            'num_hidden_units': self._num_hidden_units,
-            'regularizer_value': self._regularizer_value,
-        }, model_path)
+            if val_data is not None:
+                model.eval()
+                with torch.no_grad():
+                    val_preds = model(val_inputs).squeeze(-1)
+                    val_loss = criterion(val_preds, val_labels.squeeze(-1)).item()
+                    val_acc = ((val_preds > 0.5).float() == val_labels.squeeze(-1)).sum().item() / val_labels.size(0)
+                    val_auc = roc_auc_score(val_labels.cpu().numpy(), val_preds.cpu().numpy())
+                    history['val_loss'].append(val_loss)
+                    history['val_accuracy'].append(val_acc)
+                    history['val_auc'].append(val_auc)
+
+                    if val_auc > best_val_auc:
+                        best_val_auc = val_auc
+                        best_epoch = epoch
+                        torch.save({
+                            'model_state_dict': model.state_dict(),
+                            'data_types': data_types,
+                            'data_sizes': data_sizes,
+                            'num_hidden_units': self._num_hidden_units,
+                            'regularizer_value': self._regularizer_value,
+                        }, model_path)
+                        print('Best model saved at epoch %d with val_auc: %.4f' % (epoch + 1, best_val_auc))
+                scheduler.step(val_loss)
+                current_lr = optimizer.param_groups[0]['lr']
+
+                print('Epoch %d/%d - loss: %.4f - accuracy: %.4f - val_loss: %.4f - val_accuracy: %.4f - val_auc: %.4f' %
+                      (epoch + 1, epochs, epoch_loss, epoch_acc, val_loss, val_acc, val_auc))
+            else:
+
+                scheduler.step(val_loss if val_data is not None else epoch_loss)
+                current_lr = optimizer.param_groups[0]['lr']
+                print('Epoch %d/%d - loss: %.4f - accuracy: %.4f - lr: %.6f' % (epoch + 1, epochs, epoch_loss, epoch_acc, current_lr))
+
+        if val_data is not None:
+            print('Best model was at epoch %d with val_auc: %.4f' % (best_epoch + 1, best_val_auc))
+        else:
+
+            print('Train model is saved to {}'.format(model_path))
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'data_types': data_types,
+                'data_sizes': data_sizes,
+                'num_hidden_units': self._num_hidden_units,
+                'regularizer_value': self._regularizer_value,
+            }, model_path)
 
         model_opts_path, _ = get_path(save_folder=model_folder_name,
                                       save_root_folder='data/models',

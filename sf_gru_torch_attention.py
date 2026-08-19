@@ -266,3 +266,412 @@ class OtherModalStackedGRU(nn.Module):
 class OtherModalSFGRU(SFGRUTorch):
     def build_model(self, data_types, data_sizes):
         return OtherModalStackedGRU(data_types, data_sizes, self._num_hidden_units).to(self.device)
+
+
+
+# ---------------------------------------------------------------------------
+# 5. Temporal Transformer Fusion
+# ---------------------------------------------------------------------------
+
+class TemporalTransformerStackedGRU(nn.Module):
+    """
+    Each modality is encoded independently with a GRU.
+
+    The modality sequences are concatenated along the feature dimension:
+        [B, T, M*H]
+
+    A TransformerEncoder performs temporal reasoning over the joint
+    multimodal representation.
+
+    A final GRU summarizes the temporally-attended sequence for
+    binary crossing prediction.
+    """
+
+    def __init__(
+        self,
+        data_types,
+        data_sizes,
+        hidden_units,
+        num_heads=4,
+        num_layers=2,
+        dropout=0.1
+    ):
+        super().__init__()
+
+        self.data_types = data_types
+        self.hidden_units = hidden_units
+        self.num_modalities = len(data_sizes)
+
+        # ---------------------------------------------------------
+        # Independent temporal encoder for each modality
+        # ---------------------------------------------------------
+        self.encoders = nn.ModuleList([
+            nn.GRU(
+                input_size=size[-1],
+                hidden_size=hidden_units,
+                batch_first=True
+            )
+            for size in data_sizes
+        ])
+
+        concat_dim = hidden_units * self.num_modalities
+
+        # concat_dim must be divisible by num_heads.
+        assert concat_dim % num_heads == 0, (
+            f"concat_dim={concat_dim} must be divisible "
+            f"by num_heads={num_heads}"
+        )
+
+        # ---------------------------------------------------------
+        # Transformer over TIME
+        # ---------------------------------------------------------
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=concat_dim,
+            nhead=num_heads,
+            dim_feedforward=concat_dim * 2,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.temporal_transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
+        )
+
+        # ---------------------------------------------------------
+        # Final temporal GRU
+        # ---------------------------------------------------------
+        self.final_gru = nn.GRU(
+            input_size=concat_dim,
+            hidden_size=hidden_units,
+            batch_first=True
+        )
+
+        self.output = nn.Linear(hidden_units, 1)
+
+    def forward(self, inputs):
+
+        sequences = []
+
+        for gru, inp in zip(self.encoders, inputs):
+            out, _ = gru(inp)
+            # [B, T, H]
+            sequences.append(out)
+
+        # [B, T, M*H]
+        x = torch.cat(sequences, dim=2)
+
+        # Transformer attention across temporal dimension
+        x = self.temporal_transformer(x)
+
+        # Final sequence aggregation
+        _, h = self.final_gru(x)
+
+        x = h.squeeze(0)
+
+        return torch.sigmoid(self.output(x))
+
+
+class TemporalTransformerSFGRU(SFGRUTorch):
+
+    def build_model(self, data_types, data_sizes):
+
+        return TemporalTransformerStackedGRU(
+            data_types,
+            data_sizes,
+            self._num_hidden_units,
+            num_heads=4,
+            num_layers=2,
+            dropout=0.1
+        ).to(self.device)
+
+
+# ---------------------------------------------------------------------------
+# 6. Gated Modality + Temporal Transformer Fusion
+# ---------------------------------------------------------------------------
+
+class GatedTemporalTransformerStackedGRU(nn.Module):
+    """
+    Independent GRU encoder per modality.
+
+    Each encoded modality receives a learned time-varying gate:
+
+        g_t^m = sigmoid(W_m h_t^m + b_m)
+        h'_t^m = g_t^m * h_t^m
+
+    The gated modality sequences are concatenated and passed through
+    a temporal Transformer followed by a final GRU.
+    """
+
+    def __init__(
+        self,
+        data_types,
+        data_sizes,
+        hidden_units,
+        num_heads=4,
+        num_layers=2,
+        dropout=0.1
+    ):
+        super().__init__()
+
+        self.data_types = data_types
+        self.hidden_units = hidden_units
+        self.num_modalities = len(data_sizes)
+
+        # ---------------------------------------------------------
+        # Independent GRU encoder per modality
+        # ---------------------------------------------------------
+        self.encoders = nn.ModuleList([
+            nn.GRU(
+                input_size=size[-1],
+                hidden_size=hidden_units,
+                batch_first=True
+            )
+            for size in data_sizes
+        ])
+
+        # ---------------------------------------------------------
+        # One gate per modality
+        #
+        # Vector gate:
+        #     [B,T,H] -> [B,T,H]
+        #
+        # Different hidden dimensions can be weighted differently.
+        # ---------------------------------------------------------
+        self.gates = nn.ModuleList([
+            nn.Linear(hidden_units, hidden_units)
+            for _ in data_sizes
+        ])
+
+        concat_dim = hidden_units * self.num_modalities
+
+        assert concat_dim % num_heads == 0, (
+            f"concat_dim={concat_dim} must be divisible "
+            f"by num_heads={num_heads}"
+        )
+
+        # ---------------------------------------------------------
+        # Temporal Transformer
+        # ---------------------------------------------------------
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=concat_dim,
+            nhead=num_heads,
+            dim_feedforward=concat_dim * 2,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.temporal_transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
+        )
+
+        # ---------------------------------------------------------
+        # Final GRU
+        # ---------------------------------------------------------
+        self.final_gru = nn.GRU(
+            input_size=concat_dim,
+            hidden_size=hidden_units,
+            batch_first=True
+        )
+
+        self.output = nn.Linear(hidden_units, 1)
+
+    def forward(self, inputs):
+
+        gated_sequences = []
+
+        for gru, gate_layer, inp in zip(
+            self.encoders,
+            self.gates,
+            inputs
+        ):
+            # Encode modality over time
+            out, _ = gru(inp)
+            # [B,T,H]
+
+            # Time-varying vector gate
+            gate = torch.sigmoid(
+                gate_layer(out)
+            )
+            # [B,T,H]
+
+            gated = gate * out
+
+            gated_sequences.append(gated)
+
+        # Preserve modality identity by concatenating
+        x = torch.cat(
+            gated_sequences,
+            dim=2
+        )
+        # [B,T,M*H]
+
+        # Temporal multimodal reasoning
+        x = self.temporal_transformer(x)
+
+        # Aggregate sequence
+        _, h = self.final_gru(x)
+
+        x = h.squeeze(0)
+
+        return torch.sigmoid(
+            self.output(x)
+        )
+
+
+class GatedTemporalTransformerSFGRU(SFGRUTorch):
+
+    def build_model(self, data_types, data_sizes):
+
+        return GatedTemporalTransformerStackedGRU(
+            data_types,
+            data_sizes,
+            self._num_hidden_units,
+            num_heads=4,
+            num_layers=2,
+            dropout=0.1
+        ).to(self.device)
+
+# ---------------------------------------------------------------------------
+# Gated Cross-Modal Temporal Attention
+# ---------------------------------------------------------------------------
+
+class GatedCrossModalStackedGRU(nn.Module):
+    """
+    Each modality is encoded independently with a GRU.
+
+    A learned time-varying gate is applied to each encoded modality:
+
+        g_t^m = sigmoid(W_m h_t^m + b_m)
+        h'_t^m = g_t^m * h_t^m
+
+    The gated modality sequences are concatenated, then the SAME lightweight
+    temporal attention used by CrossModalStackedGRU is applied.
+
+    Finally, a GRU summarizes the temporally attended multimodal sequence.
+    """
+
+    def __init__(
+        self,
+        data_types,
+        data_sizes,
+        hidden_units,
+        dropout=0.1
+    ):
+        super().__init__()
+
+        self.data_types = data_types
+        self.hidden_units = hidden_units
+        self.num_modalities = len(data_sizes)
+
+        # ---------------------------------------------------------
+        # Independent GRU encoder per modality
+        # ---------------------------------------------------------
+        self.encoders = nn.ModuleList([
+            nn.GRU(
+                input_size=size[-1],
+                hidden_size=hidden_units,
+                batch_first=True
+            )
+            for size in data_sizes
+        ])
+
+        # ---------------------------------------------------------
+        # One learned vector gate per modality
+        #
+        # Input/output:
+        # [B, T, H] -> [B, T, H]
+        # ---------------------------------------------------------
+        self.gates = nn.ModuleList([
+            nn.Linear(hidden_units, hidden_units)
+            for _ in data_sizes
+        ])
+
+        concat_dim = hidden_units * self.num_modalities
+
+        # ---------------------------------------------------------
+        # SAME lightweight temporal attention as CrossModalStackedGRU
+        # ---------------------------------------------------------
+        self.temporal_attn = _AttentionBlock(
+            concat_dim,
+            dropout_p=dropout
+        )
+
+        # ---------------------------------------------------------
+        # Final temporal aggregation
+        # ---------------------------------------------------------
+        self.final_gru = nn.GRU(
+            input_size=concat_dim,
+            hidden_size=hidden_units,
+            batch_first=True
+        )
+
+        self.output = nn.Linear(hidden_units, 1)
+
+    def forward(self, inputs):
+
+        gated_sequences = []
+
+        # ---------------------------------------------------------
+        # 1. Encode each modality independently
+        # 2. Apply modality-specific, time-dependent gating
+        # ---------------------------------------------------------
+        for gru, gate_layer, inp in zip(
+            self.encoders,
+            self.gates,
+            inputs
+        ):
+            out, _ = gru(inp)
+            # out: [B, T, H]
+
+            gate = torch.sigmoid(
+                gate_layer(out)
+            )
+            # gate: [B, T, H]
+
+            gated = gate * out
+
+            gated_sequences.append(gated)
+
+        # ---------------------------------------------------------
+        # 3. Concatenate gated modalities
+        #
+        # [B, T, M*H]
+        # ---------------------------------------------------------
+        x = torch.cat(
+            gated_sequences,
+            dim=2
+        )
+
+        # ---------------------------------------------------------
+        # 4. Temporal attention over the JOINT representation
+        # ---------------------------------------------------------
+        x = self.temporal_attn(x)
+
+        # ---------------------------------------------------------
+        # 5. Final temporal GRU
+        # ---------------------------------------------------------
+        _, h = self.final_gru(x)
+
+        x = h.squeeze(0)
+
+        return torch.sigmoid(
+            self.output(x)
+        )
+
+
+class GatedCrossModalSFGRU(SFGRUTorch):
+
+    def build_model(self, data_types, data_sizes):
+
+        return GatedCrossModalStackedGRU(
+            data_types,
+            data_sizes,
+            self._num_hidden_units,
+            dropout=0.1
+        ).to(self.device)

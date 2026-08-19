@@ -62,7 +62,7 @@ os.chdir(SFGRU_DIR)
 import sf_gru_torch as _sfgru_mod
 from pie_data import PIE
 from sf_gru_torch_attention import (CrossModalSFGRU, ModalityFusionSFGRU,
-                                    OtherModalSFGRU, PoseAttentionSFGRU)
+                                    OtherModalSFGRU, PoseAttentionSFGRU,GatedTemporalTransformerSFGRU, TemporalTransformerSFGRU, GatedCrossModalSFGRU)
 
 ARCHITECTURES = {
     'pose_box':        lambda: PoseAttentionSFGRU(attention_on='box'),
@@ -70,6 +70,9 @@ ARCHITECTURES = {
     'modality_fusion': lambda: ModalityFusionSFGRU(),
     'cross_modal':     lambda: CrossModalSFGRU(),
     'other_modal':     lambda: OtherModalSFGRU(),
+    'gated_temporal_transformer': lambda: GatedTemporalTransformerSFGRU(),
+    'temporal_transformer': lambda: TemporalTransformerSFGRU(),
+    'gated_cross_modal': lambda: GatedCrossModalSFGRU(),
 }
 
 # -- get_pose with graceful zero-fallback on missing sets/frames ---------------
@@ -185,7 +188,7 @@ def summarise(runs):
     }
 
 
-def run_one_seed(seed, architecture, pose_backend, experiment_label=None):
+def run_one_seed(seed, architecture, pose_backend, experiment_label=None, lr=1e-4):
     if experiment_label is None:
         experiment_label = pose_backend
     torch.manual_seed(seed)
@@ -198,9 +201,18 @@ def run_one_seed(seed, architecture, pose_backend, experiment_label=None):
              architecture, seed, experiment_label, pose_backend)
 
     beh_train = imdb.generate_data_trajectory_sequence('train', **DATA_OPTS)
+    beh_val = imdb.generate_data_trajectory_sequence('val', **DATA_OPTS)
     method = ARCHITECTURES[architecture]()
 
-    saved_files_path = method.train(beh_train, model_opts=MODEL_OPTS)
+    # saved_files_path = method.train(beh_train, model_opts=MODEL_OPTS)
+    saved_files_path = method.train(
+        beh_train,
+        data_val=beh_val,
+        batch_size=32,
+        epochs=100,
+        lr=lr,
+        model_opts=MODEL_OPTS
+        )
 
     beh_test = imdb.generate_data_trajectory_sequence('test', **DATA_OPTS)
     acc, auc, f1, prec, rec = method.test(beh_test, saved_files_path)
@@ -220,6 +232,12 @@ def main():
                         choices=['rtmpose', 'openpose', 'none'],
                         help='Pose backend (default: rtmpose). "none" zeroes '
                              'the pose input for the ablation baseline.')
+    parser.add_argument(
+    '--lr',
+    type=float,
+    default=1e-4,
+    help='Learning rate'
+)
     args = parser.parse_args()
 
     if args.backend == 'none':
@@ -234,7 +252,7 @@ def main():
 
     runs = []
     for seed in range(args.seeds):
-        m = run_one_seed(seed, args.architecture, pose_env_backend, experiment_label=args.backend)
+        m = run_one_seed(seed, args.architecture, pose_env_backend, experiment_label=args.backend, lr=args.lr)
         runs.append(m)
 
     summary = summarise(runs)
@@ -243,8 +261,8 @@ def main():
              summary['acc_mean'], summary['acc_std'],
              summary['auc_mean'], summary['auc_std'],
              summary['f1_mean'],  summary['f1_std'])
-
-    out = os.path.join(RESULTS_DIR, f'full_pie_attention_{args.architecture}_{args.backend}.pkl')
+    lr_str = str(args.lr).replace('.', 'p')
+    out = os.path.join(RESULTS_DIR, f'full_pie_attention_{args.architecture}_{args.backend}_lr{lr_str}.pkl')
     with open(out, 'wb') as f:
         pickle.dump({'runs': runs, 'summary': summary}, f)
     log.info('Saved: %s', out)
