@@ -1,0 +1,93 @@
+% conclusion.tex
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We set out to understand why SF-GRU-family pedestrian crossing-intention
+models fail to generalize across PIE and JAAD, and found more than one
+answer was needed. Part of the difficulty was a silent, orthogonal data
+bug in JAAD's default configuration, unrelated to cross-dataset transfer
+itself but affecting any result built on the unaudited default; we
+identify, fix, and re-confirm our findings hold under the correction.
+The remaining, genuine cross-dataset collapse is not explained by camera
+geometry, and the closely related phenomenon of split-sensitivity is
+not explained by video-level train/test leakage -- both plausible,
+natural hypotheses that we falsify directly rather than merely fail to
+support. A domain-adversarial and contrastive training recipe, applied
+to the fused representation and motivated by a modality-zeroing
+ablation, produces a real, seed-confirmed improvement in both transfer
+directions on SF-GRU, but leaves cross-dataset performance well below
+in-domain levels; we consider this residual gap, not the improvement,
+to be the more important number to report honestly. A
+representation-separability probe, deliberately independent of the
+domain classifier used during training, shows this recipe's benefit is
+dissociated from the literal domain-invariance it is designed to
+induce -- the representations that help most are, if anything,
+\emph{more} separable by an external probe, not less -- suggesting its
+practical effect is closer to a generic regularizer on the fused
+representation than to representation alignment per se. Testing the
+same recipe on two further, structurally distinct fusion architectures
+supports this reading further and tempers any claim of a general-
+purpose fix: on cross-attention fusion the improvement replicates only
+partially, and on uncertainty-weighted fusion -- the strongest
+unadapted baseline architecture we find -- the same recipe
+significantly \emph{degrades} performance. We take from this that
+domain-adversarial training's value here is real but architecture-
+specific, not evidence that it achieves anything close to its nominal
+objective of representational invariance regardless of architecture.
+
+We draw two broader conclusions. First, cross-dataset evaluation should
+be treated as standard practice for pedestrian crossing-intention
+architectures, not an optional follow-up: every architecture we survey
+in Section~\ref{sec:related} published since Gesnouin~et~al.'s original
+finding~\cite{gesnouin2022} reports only in-domain results, and our own
+in-domain numbers (Table~\ref{tab:baseline}) look entirely unremarkable
+next to a near-chance cross-dataset collapse the same checkpoint
+exhibits. In-domain performance on PIE or JAAD alone is not informative
+about whether a proposed architecture has learned anything that
+transfers. Second, we think auditing benchmark and pipeline details
+that are easy to get silently wrong -- data-loader defaults, split
+construction, the provenance of a supposedly domain-invariant
+representation -- is undersupplied relative to the rate at which new
+architectures are proposed for these benchmarks, and that the negative
+results in this paper (ruled-out geometry, ruled-out leakage, a
+dissociated invariance mechanism) are worth reporting even though none
+of them, individually, is the paper's headline number.
+
+\textbf{Limitations.} Our experiments center on SF-GRU's stacked fusion;
+we additionally test our headline recipe on two further, structurally
+distinct architectures (box-anchored cross-attention,
+Section~\ref{sec:results-crossattn}, and uncertainty-weighted fusion,
+Section~\ref{sec:results-uncertainty}). The probe dissociation --
+higher separability wherever the recipe changes task behavior at all --
+replicates on both, but the \emph{fix itself} does not: cross-attention
+shows a partial, one-direction improvement, and uncertainty-weighted
+fusion shows the recipe significantly harming its (strongest, of any
+architecture we test) unadapted baseline. We therefore have reasonable
+evidence the dissociation mechanism is not an SF-GRU-specific artifact,
+but active evidence \emph{against} the fix being architecture-general,
+not merely an absence of evidence for it. We did not test transformer-
+or Mamba-based architectures at all, so whether our findings extend to
+substantially larger or differently-inductive-biased fusion mechanisms
+remains open, and a practitioner adopting this recipe on a new
+architecture should re-validate both directions rather than assume
+transfer. We evaluate on two datasets; both are
+pedestrian-crossing-specific,
+relatively small by modern standards, and share enough protocol
+lineage (both from the same research group) that a third, more
+independently sourced dataset (e.g.\ TITAN) would strengthen any claim
+that our findings reflect a general property of this task rather than
+a property specific to the PIE/JAAD pair. Our camera-geometry
+falsification relies on a researched, not measured, camera calibration
+for JAAD, since JAAD does not publish one; we mitigate this with a
+sensitivity sweep over plausible parameter ranges but cannot rule out
+that a parameter setting outside our swept range behaves differently.
+Finally, our synthesized JAAD speed modality is a coarse optical-flow
+proxy, not a calibrated measurement, and its negative result should be
+read as evidence about this particular proxy rather than as a general
+claim that a speed signal cannot help JAAD cross-dataset transfer.
+
+We release our corrected-labeling configuration, falsification
+experiments, and probe methodology in the hope that they are directly
+reusable by future work evaluating new architectures on PIE and JAAD,
+independent of whether that work adopts our specific training recipe.

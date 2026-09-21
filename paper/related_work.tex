@@ -1,0 +1,153 @@
+% related_work.tex
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Architectural Progress on Pedestrian Crossing Intention}
+\label{sec:related-arch}
+
+PIE~\cite{rasouli2019pie} and JAAD~\cite{rasouli2017jaad} have been the
+dominant benchmarks for pedestrian crossing-intention prediction since
+their introduction, and a substantial body of work has advanced
+in-dataset accuracy on them through progressively richer cross-modal
+fusion: SF-GRU~\cite{rasouli2020sfgru} stacks per-modality GRUs;
+PCPA~\cite{kotseruba2021pcpa} adds temporal and modality attention over
+3D-convolutional, pose, and box streams; more recent work replaces
+recurrent fusion with transformer- or state-space-based temporal
+encoders and heavier visual backbones -- e.g.\
+Rahman~et~al.~\cite{adapt2026} combine a weight-shared Swin
+Transformer~V2 backbone with a Mamba-based motion-encoding module and
+sparse cross-modal attention (17.23\,ms/sample inference; 0.90 AUC on
+PIE), and TrajFusionNet~\cite{trajfusionnet2026} fuses a sequential
+branch (trajectory and ego-vehicle speed) with a visual branch
+(predicted pedestrian bounding boxes overlaid on scene imagery) through
+a transformer-based architecture. This line of work reports steadily
+improving in-dataset accuracy and AUC on PIE and JAAD, but -- to the
+best of our knowledge -- none of it evaluates cross-dataset
+generalization; every result we found in this literature is reported
+under the standard train-test-same-dataset protocol, confirmed by
+direct inspection of released code where available (e.g.\ the ADAPT
+implementation trains and evaluates PIE and JAAD independently, with no
+cross-dataset transfer).
+
+\subsection{Efficiency-Focused Approaches}
+\label{sec:related-efficiency}
+
+A parallel line of work optimizes for inference cost rather than
+peak accuracy. EfficientPIE~\cite{efficientpie2025} argues that a
+single observed frame, processed by a lightweight convolutional
+architecture (Fused-MBConv / MBConv blocks with depthwise-separable
+convolutions), is sufficient for competitive crossing-intention
+accuracy, reporting 0.21\,ms inference latency and state-of-the-art
+in-dataset accuracy on both PIE (0.92) and JAAD (0.89) -- outperforming
+SF-GRU and every other baseline in their comparison table. This
+demonstrates that architectural efficiency and competitive in-dataset
+accuracy are not in tension for this task. However, EfficientPIE's
+evaluation, like the architectures in
+Section~\ref{sec:related-arch}, is entirely in-dataset;
+sole-observation, single-frame architectures in particular raise an
+open question -- not addressed in that work or, to our knowledge,
+anywhere else -- of whether relying on a single frame's local
+appearance and context makes a model \emph{more} or \emph{less}
+sensitive to the dataset-specific visual-context statistics we
+localize as the dominant driver of cross-dataset sensitivity in
+Section~\ref{sec:results-ablation}.
+
+\subsection{Cross-Dataset and Robustness Evaluation}
+\label{sec:related-robustness}
+
+Gesnouin~et~al.~\cite{gesnouin2022} is, to our knowledge, the only prior
+work to evaluate pedestrian crossing-intention predictors under a
+cross-dataset protocol. Training eleven architectures spanning static
+CNN, 3D-convolutional, pose-based, and RNN-based fusion designs
+(including an SF-GRU-family model, SFRNN) on one of PIE, JAAD-behavior,
+or JAAD-all and testing on the others, they find that every architecture
+generalizes poorly -- performance is often statistically
+indistinguishable from, or worse than, chance -- regardless of its
+in-dataset ranking, and argue that classification metrics alone are
+insufficient without accompanying uncertainty calibration (Expected and
+Maximum Calibration Error). They further show that generic
+ImageNet/Sports1M-pretrained backbones (VGG16, C3D, I3D) generalize
+comparably to or better than crossing-intention-specific architectures
+under domain shift, and that pretraining on data further from the target
+domain improves calibration under shift. A citation-graph search over
+all papers citing~\cite{gesnouin2022} through 2026 (spanning the
+architectures in Section~\ref{sec:related-arch} onward) found none that
+independently repeat a PIE$\leftrightarrow$JAAD cross-dataset
+evaluation; a 2022 survey of the field cites it as the sole reference
+for this open problem~\cite{fang2022survey}.
+
+Two further papers from the same research group are directly relevant.
+Achaji~et~al.~\cite{achaji2022bbox} show that bounding-box-only features
+are unexpectedly sufficient for strong in-domain crossing-intention
+accuracy on PIE, and hypothesize this may reflect a dataset-specific
+bias rather than a genuinely informative signal; they test this via
+synthetic-to-real transfer (a CARLA-simulated dataset to PIE) rather
+than real-to-real cross-dataset transfer, and do not evaluate JAAD. This
+is, to our knowledge, the closest prior evidence that box-trajectory
+reliance can reflect a dataset-specific bias rather than a genuinely
+transferable signal, a hypothesis we test directly with a real
+cross-dataset, no-box ablation (Section~\ref{sec:results-geometry}); our
+modality-zeroing results (Section~\ref{sec:results-ablation}), however,
+localize cross-dataset sensitivity primarily to the visual
+scene-context modality rather than to the box trajectory itself,
+suggesting box-trajectory sufficiency and cross-dataset box-trajectory
+fragility are related but not identical phenomena for SF-GRU.
+Gilles~et~al.~\cite{gilles2022uncertainty} study cross-dataset
+uncertainty for general autonomous-vehicle trajectory forecasting
+(Argoverse, nuScenes, Interaction, and the Shifts benchmark) rather than
+pedestrian crossing-intention classification on PIE/JAAD, but establish
+that cross-dataset evaluation and uncertainty estimation are an active
+concern in the broader AV-perception community, not one specific to
+crossing-intention prediction.
+
+Our work directly extends~\cite{gesnouin2022}'s finding to the current
+generation of lightweight fusion architectures: we show the same
+collapse persists for SF-GRU under corrected JAAD labels
+(Section~\ref{sec:results-collapse}), that it is not resolved by
+architectural refinements published since 2022
+(Section~\ref{sec:related-arch}, none of which re-evaluate cross-dataset
+performance), and that it is not explained by camera-geometry mismatch
+or video-level split leakage, two plausible confounds neither prior
+paper tests directly (Sections~\ref{sec:results-geometry}
+and~\ref{sec:results-leakage}). Going beyond~\cite{gesnouin2022}'s
+architecture-level comparison and~\cite{achaji2022bbox}'s in-domain
+sufficiency finding, we localize the failure to a specific input
+modality within a single architecture
+(Section~\ref{sec:results-ablation}), apply a domain-adversarial and
+contrastive mitigation (Section~\ref{sec:results-dann}), and use an
+independent representation probe to show that mitigation's benefit is
+dissociated from the representational invariance it is designed to
+produce (Section~\ref{sec:results-probe}).
+
+Uncertainty and calibration for pedestrian intention prediction has also
+been studied outside the cross-dataset setting.
+Zhang~et~al.~\cite{zhang2023trep} apply evidential deep learning within
+a transformer to quantify prediction confidence under label noise.
+Concurrent work on the PSI dataset~\cite{ashayer2026psi} incorporates a
+variational bottleneck and a Mahalanobis-distance detector for
+\emph{within}-dataset out-of-distribution sample detection and selective
+prediction, improving accuracy by abstaining on the riskiest individual
+test samples; this is a complementary but distinct problem from the
+\emph{between}-dataset domain shift we study, and that work does not
+evaluate PIE/JAAD or cross-dataset transfer.
+
+\subsection{Positioning}
+\label{sec:related-positioning}
+
+Taken together, the literature on pedestrian crossing-intention
+prediction has, since~\cite{gesnouin2022}, continued to report
+in-dataset accuracy gains through richer fusion
+(Section~\ref{sec:related-arch}) and lower inference cost
+(Section~\ref{sec:related-efficiency}) without re-examining whether
+those gains reflect genuine, transferable intention-recognition ability
+or dataset-specific fit -- despite the open problem being visible enough
+to be cited in a field survey~\cite{fang2022survey}. Our contribution is
+to re-open that question empirically for the current architecture
+generation, using a lightweight representative architecture (SF-GRU) for
+which cross-dataset training and modality-level diagnosis is
+computationally tractable, and to go beyond diagnosis to a partial,
+mechanistically-understood fix: a domain-adversarial and contrastive
+training recipe that reproducibly improves cross-dataset transfer in
+both directions without achieving the literal representational
+invariance it is nominally designed around
+(Section~\ref{sec:results-probe}).

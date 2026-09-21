@@ -1,0 +1,87 @@
+% main.tex
+% Standalone wrapper to compile/preview results.tex. Swap this preamble
+% for the actual ICRA/workshop template when assembling the full paper --
+% this file exists so the results section can be reviewed and compiled
+% independently while the rest of the paper (abstract, intro, method,
+% related work, conclusion) is being written.
+
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+
+\begin{document}
+
+\title{Cross-Dataset Generalization in Pedestrian Crossing Intention\\
+Prediction: A Diagnosis, a Data Artifact, and a Partial Fix}
+
+% \author{...}  % fill in once authorship is settled
+
+\maketitle
+
+\begin{abstract}
+  Pedestrian crossing-intention predictors are almost universally
+  evaluated by training and testing on the same dataset. Prior work
+  showed this hides severe generalization failure: performance near
+  chance when a model trained on one benchmark (PIE or JAAD) is tested,
+  unchanged, on the other. No architecture paper we identify in the
+  2024--2026 literature re-evaluates this protocol. We revisit
+  cross-dataset transfer for SF-GRU, a representative fusion
+  architecture, and in the process discover that JAAD's standard data
+  loader silently mislabels the majority of samples under its default
+  configuration -- an artifact independent of, but entangled with,
+  cross-dataset evaluation -- which we identify, correct, and confirm
+  does not itself explain the collapse. Under corrected labels, we run
+  a falsification campaign against the two most natural explanations
+  for the collapse and for a related split-sensitivity phenomenon:
+  camera-geometry mismatch (tested via real metric-space ground-plane
+  reprojection and a 20-point camera-parameter sensitivity sweep) and
+  video-level train/test leakage (tested via a purpose-built
+  video-grouped data split). Both are ruled out. Motivated by a
+  modality-zeroing ablation that instead localizes sensitivity to the
+  visual scene-context branch, we apply domain-adversarial training
+  combined with a contrastive scale-invariance term, obtaining a real,
+  seed-confirmed improvement in both transfer directions ($n=6$ seeds;
+  PIE$\to$JAAD AUC $0.498\to0.621$, JAAD$\to$PIE AUC
+  $0.402\to0.613$) that nonetheless leaves cross-dataset performance
+  well below in-domain levels. Using an independent representation
+  probe, we then show this improvement is \emph{dissociated} from the
+  literal domain-invariance the method is designed to induce: the
+  configurations that improve transfer AUC also make the fused
+  representation \emph{more}, not less, separable by an external probe,
+  while a control that reduces separability also reduces AUC. Testing
+  the same recipe on two further, structurally distinct fusion
+  architectures shows it is not a general-purpose fix: on box-anchored
+  cross-attention, the AUC improvement replicates in one transfer
+  direction and is not distinguishable from baseline in the other,
+  while the separability increase itself scales with whether the recipe
+  changes task behavior at all; on uncertainty-weighted fusion -- the
+  strongest \emph{unadapted} baseline architecture we find -- the same
+  recipe significantly \emph{degrades} performance. We argue this
+  pattern is more consistent with a generic-regularizer account of the
+  mechanism than with literal representation-alignment, since the
+  latter offers no reason for the same objective to reliably help one
+  architecture and reliably hurt another. We argue cross-dataset
+  evaluation should be standard practice for this task, and that
+  auditing easy-to-miss pipeline details -- data-loader defaults, split
+  construction, the actual mechanism and architecture-dependence behind
+  an apparent fix -- deserves more attention relative to the rate at
+  which new architectures are proposed for these same benchmarks.
+\end{abstract}
+
+\input{intro.tex}
+
+\input{related_work.tex}
+
+\input{method.tex}
+
+\input{results.tex}
+
+\input{conclusion.tex}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

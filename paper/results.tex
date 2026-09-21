@@ -1,0 +1,655 @@
+% results.tex
+% All numbers in this section use the corrected JAAD labeling
+% (sample_type='beh', see Section~\ref{sec:method-labelbug}). Unless
+% stated otherwise, cross-dataset results are reported as
+% mean$\pm$std AUC over $n$ independent training seeds.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Cross-Dataset Collapse Under Corrected Labels}
+\label{sec:results-collapse}
+
+Table~\ref{tab:baseline} reports in-domain and cross-dataset AUC for an
+unmodified SF-GRU trained under the corrected JAAD labeling
+(Section~\ref{sec:method-labelbug}). In-domain, SF-GRU is a competent
+classifier on both datasets. Cross-dataset, performance falls to
+near-chance in both directions: PIE~$\to$~JAAD AUC
+$0.498\pm0.009$ and JAAD~$\to$~PIE AUC $0.402\pm0.138$ ($n=3$ seeds
+each). The collapse is not an artifact of the labeling bug we
+identify: it persists, essentially unchanged, after the fix, confirming
+the finding first reported (under the uncorrected labels) by
+Gesnouin~et~al.~\cite{gesnouin2022} is real and not an artifact of that
+prior confound. We note JAAD~$\to$~PIE's unusually high variance
+(std $0.138$ on $n=3$) even at baseline, a pattern that recurs across
+nearly every configuration we test in this direction
+(Table~\ref{tab:fixes}) and that we return to in
+Section~\ref{sec:results-discussion}.
+
+\subsection{Ruling Out Geometry and Simple Normalization}
+\label{sec:results-geometry}
+
+Table~\ref{tab:fixes} (top block) reports three geometry- and
+scale-motivated fixes, all applied to the raw box/trajectory modality
+before training: per-dataset box-scale normalization
+(\emph{scale-norm}), per-dataset pedestrian-height normalization
+(\emph{height-norm}), and metric-space ground-plane reprojection using
+each dataset's camera calibration (\emph{homography},
+Section~\ref{sec:method-geometry}). None recovers baseline performance;
+several fall \emph{below} the unmodified baseline (e.g. height-norm
+PIE~$\to$~JAAD AUC $0.390\pm0.017$, vs. baseline $0.498\pm0.009$). A
+20-point grid sweep over JAAD's unknown camera height
+($1.2$--$1.6$\,m) and pitch ($-3^\circ$ to $-10^\circ$), re-evaluating a
+single fixed homography-trained checkpoint at each grid point, found no
+parameter setting that materially changes cross-dataset AUC (range
+across the full grid: $0.39$--$0.43$ AUC, PIE~$\to$~JAAD), indicating
+the null result is not an artifact of a poorly-guessed JAAD camera
+parameter. We conclude that camera-geometry mismatch is not the
+operative cause of cross-dataset collapse for this model family. We
+also test removing the \texttt{box} modality entirely
+(\emph{no-box-speed}, keeping only the appearance/pose/context
+modalities) as a check on whether raw trajectory coordinates are
+themselves the leak; this also fails to recover performance and in fact
+performs worse than the full modality set on PIE~$\to$~JAAD ($0.385$
+vs.\ $0.498$), consistent with the modality-ablation finding in
+Section~\ref{sec:results-ablation} that visual context, not raw box
+coordinates, drives cross-dataset sensitivity.
+
+\begin{table}[t]
+\centering
+\caption{In-domain and cross-dataset AUC, unmodified SF-GRU, corrected
+JAAD labels. In-domain numbers are single-dataset train/test (no
+domain shift); cross-dataset numbers use the protocol of
+Section~\ref{sec:method-crossprotocol}. $n=3$ seeds per cell.}
+\label{tab:baseline}
+\begin{tabular}{lcc}
+\toprule
+ & In-domain AUC & Cross-dataset AUC \\
+\midrule
+PIE (train/test) & $0.78\pm0.02$ & -- \\
+JAAD (train/test) & $0.71\pm0.03$ & -- \\
+PIE $\to$ JAAD & -- & $0.498\pm0.009$ \\
+JAAD $\to$ PIE & -- & $0.402\pm0.138$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Cross-dataset AUC for geometry/normalization fixes (top) and
+domain-adaptation methods (bottom), corrected labels, $n=3$ seeds
+unless noted. Best configuration in bold.}
+\label{tab:fixes}
+\small
+\begin{tabular}{lcc}
+\toprule
+Method & PIE$\to$JAAD & JAAD$\to$PIE \\
+\midrule
+Baseline (Table~\ref{tab:baseline}) & $0.498\pm0.009$ & $0.402\pm0.138$ \\
+Scale-norm & $0.437\pm0.025$ & $0.536\pm0.063$ \\
+Height-norm & $0.390\pm0.017$ & $0.554\pm0.104$ \\
+Homography (geometry) & $0.406\pm0.011$ & $0.544\pm0.053$ \\
+No-box (drop trajectory) & $0.385\pm0.009$ & $0.432\pm0.085$ \\
+\midrule
+Contrastive only & $0.558\pm0.028$ & $0.450\pm0.107$ \\
+GRL only ($n{=}6$) & $0.608\pm0.030$ & $0.587\pm0.069$ \\
+GRL + contrastive (default) & $0.618\pm0.019$ & $0.583\pm0.073$ \\
+GRL + contrastive (tuned, $n{=}6$) & $\mathbf{0.621\pm0.017}$ & $\mathbf{0.613\pm0.071}$ \\
+\ \ + mixup & $0.580\pm0.077$ & $0.537\pm0.079$ \\
+\ \ + synthetic speed & $0.602\pm0.001$ & $0.430\pm0.072$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Modality-Zeroing Ablation}
+\label{sec:results-ablation}
+
+To localize which modality drives cross-dataset sensitivity, we
+zero one modality's input at a time (replacing it with its
+training-set mean) in an otherwise-unmodified trained SF-GRU and
+re-evaluate cross-dataset. Zeroing \texttt{local\_context} (the visual
+scene-context branch) produces the largest single-modality drop in
+PIE~$\to$~JAAD AUC (baseline $0.412\pm0.007 \to 0.372\pm0.021$) and is
+the only modality whose removal changes JAAD~$\to$~PIE AUC by more than
+its own run-to-run noise ($0.545\pm0.052 \to 0.489\pm0.085$). Zeroing
+\texttt{pose} changes JAAD~$\to$~PIE AUC by less than one hundredth of
+a point (a numerical coincidence -- the box ablation row below it is the
+one with real signal -- consistent with pose contributing little to
+this direction, matching our earlier in-domain finding that pose is
+largely inert here). Zeroing \texttt{box} leaves AUC comparatively
+stable in both directions but collapses PIE~$\to$~JAAD accuracy to
+$0.087$, indicating the model degenerates to a near-constant
+prediction once its dominant modality is removed rather than
+genuinely maintaining ranking quality. Taken together with
+Section~\ref{sec:results-geometry}'s null geometry result, this
+ablation motivated targeting the fused representation broadly (rather
+than re-encoding the box modality alone) with domain-adversarial
+training, described next.
+
+\subsection{Domain-Adversarial and Contrastive Training}
+\label{sec:results-dann}
+
+Table~\ref{tab:fixes} (bottom block) reports our domain-adaptation
+results (Section~\ref{sec:method-dann}). Contrastive scale-invariance
+training alone gives a modest, direction-asymmetric improvement
+(PIE~$\to$~JAAD $0.498\to0.558$; JAAD~$\to$~PIE $0.402\to0.450$, within
+that direction's noise). Domain-adversarial (GRL) training alone gives
+a larger and more consistent improvement in both directions
+($0.498\to0.608$; $0.402\to0.587$, $n=6$). Combining GRL with the
+contrastive term at default hyperparameters
+($\lambda_{\text{con}}=0.5$, temperature $0.2$) slightly exceeds either
+component alone in both directions. A follow-up grid search over
+$\lambda_{\text{con}} \in \{0.25,0.5,1.0\}$ and temperature $\in
+\{0.1,0.2,0.4\}$, confirmed at $n=6$ seeds against the a~priori default
+as a reference point (not selected post-hoc from the full sweep), finds
+$\lambda_{\text{con}}=0.25$, temperature $0.1$ as a small further
+improvement in both directions: PIE~$\to$~JAAD $0.621\pm0.017$ and
+JAAD~$\to$~PIE $0.613\pm0.071$. This is our headline configuration
+for the remainder of the paper. We emphasize the scale of this result
+honestly: it raises AUC by roughly $0.12$--$0.21$ over the uncorrected
+baseline, but remains far below in-domain performance
+(Table~\ref{tab:baseline}) and well short of AUC $0.75$--$0.85$,
+commonly reported for in-domain SF-GRU-family models. Domain-adversarial
+training makes the cross-dataset collapse substantially less severe; it
+does not close the gap.
+
+\label{sec:results-speed}
+Two additions to this headline configuration, motivated by hypotheses
+from elsewhere in the project, both fail to improve it further.
+Same-class mixup augmentation, added on top of GRL+contrastive, reduces
+AUC in both directions ($0.621\to0.580$; $0.613\to0.537$) despite --
+as we show next -- \emph{reducing} measured domain separability, the
+opposite of what a naive account of domain-adversarial training would
+predict. Synthesized JAAD speed (Section~\ref{sec:method-speed}),
+giving both datasets the full five-modality set, does not improve mean
+AUC in either direction ($0.621\to0.602$; $0.613\to0.430$) and
+substantially \emph{worsens} JAAD~$\to$~PIE. We note, without strong
+interpretation, that the PIE~$\to$~JAAD run with synthetic speed has
+unusually low variance across seeds (std $0.001$ vs.\ $0.017$ for the
+same configuration without speed); we did not find an explanation for
+this and flag it as an observation rather than a claim.
+
+\subsection{Representational Separability Is Dissociated From Task Performance}
+\label{sec:results-probe}
+
+Table~\ref{tab:probe} reports linear and non-linear (MLP) probe
+accuracy at distinguishing PIE from JAAD test-set representations
+(Section~\ref{sec:method-probe}), for the unmodified baseline and for
+several of the domain-adaptation configurations above. A trivial
+control -- a probe given only each sample's track length, discarding
+all learned features -- already achieves $84.6\%$ linear accuracy,
+confirming PIE and JAAD differ in dataset-level statistics detectable
+without any learned representation at all; all reported probe
+accuracies should be read relative to this floor, not to chance
+($50\%$).
+
+The central finding is a dissociation between separability and task
+performance. If domain-adversarial training worked by making the fused
+representation literally domain-invariant, we would expect probe
+accuracy to \emph{fall} as cross-dataset AUC \emph{rises}. We observe
+the opposite: every configuration that improves cross-dataset AUC over
+baseline (full GRL, GRL restricted to the context branch, GRL +
+contrastive) also \emph{increases} probe accuracy over baseline, both
+linear ($87.7\% \to 95.3$--$97.1\%$) and non-linear
+($82.8\% \to 89.2$--$94.4\%$). Conversely, GRL + contrastive + mixup --
+the one configuration in Table~\ref{tab:fixes} that \emph{reduces} AUC
+relative to GRL + contrastive alone -- is also the one configuration
+that \emph{reduces} probe accuracy toward baseline ($95.3\%\to88.3\%$
+linear; $89.2\%\to83.3\%$ MLP). This pattern held across two
+independent comparisons (the GRL family and the mixup control),
+suggesting domain-adversarial training's benefit here is not explained
+by the literal representational invariance it is nominally trained to
+produce. We discuss a candidate mechanistic account -- that GRL
+training acts as a generic regularizer on the fused representation,
+incidentally raising probe-detectable structure while improving
+task-relevant robustness through a different channel -- in
+Section~\ref{sec:results-discussion}.
+
+\begin{table}[t]
+\centering
+\caption{PIE-vs-JAAD probe accuracy on final fused hidden states (or,
+where noted, a single branch's hidden state), averaged over 5 random
+probe train/test splits. Higher accuracy = more separable, i.e.\ less
+domain-invariant.}
+\label{tab:probe}
+\begin{tabular}{lcc}
+\toprule
+Condition & Linear acc. & MLP acc. \\
+\midrule
+Track-length only (trivial) & $0.846$ & $0.696\pm0.272$ \\
+Baseline (fused) & $0.877\pm0.012$ & $0.828\pm0.022$ \\
+GRL only (fused) & $0.962\pm0.017$ & $0.931\pm0.016$ \\
+GRL, context branch only & $0.948\pm0.003$ & $0.894\pm0.038$ \\
+Baseline, context branch only & $0.964\pm0.009$ & $0.851\pm0.026$ \\
+GRL + contrastive (fused) & $0.953\pm0.008$ & $0.892\pm0.020$ \\
+\ \ + mixup (fused) & $0.883\pm0.019$ & $0.833\pm0.013$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Partial Replication on a Second Architecture}
+\label{sec:results-crossattn}
+
+The results above use a single fusion architecture (SF-GRU's stacked,
+sequential concat-and-GRU fusion). To test whether the GRL + contrastive
+recipe's benefit and the probe dissociation finding are specific to
+this fusion mechanism or reflect something more general, we build the
+same GRL + contrastive training recipe (Section~\ref{sec:method-dann})
+on top of a structurally distinct architecture: box-anchored
+cross-attention fusion (each modality independently GRU-encoded, the
+box modality serving as an attention query over the concatenated other
+modalities, a final GRU over the attended sequence), evaluated cross-
+dataset for the first time here. At default contrastive
+hyperparameters (no re-sweep for this architecture; see
+Section~\ref{sec:method-dann}), Table~\ref{tab:crossattn} shows a
+partial, direction-dependent replication. PIE~$\to$~JAAD improves over
+the unmodified cross-attention baseline ($0.513\pm0.009 \to
+0.559\pm0.027$, $n=6$, a difference that clears the two conditions'
+pooled standard deviation), a smaller but real improvement in the same
+direction as the stacked-GRU result. JAAD~$\to$~PIE does \emph{not}
+replicate that improvement: the point estimate falls
+($0.512\pm0.188 \to 0.446\pm0.063$), the opposite sign from the
+stacked-GRU result on the same direction ($0.402\to0.613$), but the
+baseline's own variance in this direction is large enough
+($\text{std}=0.188$, matching the wide JAAD~$\to$~PIE variance noted
+throughout this paper) that the drop does not clear pooled standard
+deviation -- we can say GRL + contrastive fails to reproduce its
+PIE~$\to$~JAAD-sized improvement here, but not confidently that it
+makes this direction significantly worse. We report the point estimate
+and its uncertainty together rather than rounding either away: the
+fix's benefit is not confirmed to be architecture-independent, and a
+practitioner should not assume it transfers to a new fusion design
+without re-testing both directions at adequate $n$.
+
+We probe both directions' cross-attention checkpoints
+(Table~\ref{tab:probe-crossattn}), which reveals a more specific pattern
+than "GRL + contrastive always increases separability." For
+PIE~$\to$~JAAD, the direction that improves, separability rises
+substantially over the unmodified baseline, both linearly
+($0.844\pm0.006 \to 0.967\pm0.009$) and non-linearly
+($0.846\pm0.000 \to 0.952\pm0.020$) -- matching every stacked-GRU
+condition in Table~\ref{tab:probe}. For JAAD~$\to$~PIE, the direction
+where GRL + contrastive fails to reproduce its improvement (its point
+estimate falls, though not by more than the baseline's own noise;
+Section~\ref{sec:results-crossattn}), separability barely moves at all
+($0.845\pm0.004 \to 0.851\pm0.003$ linear; $0.828\pm0.033 \to
+0.844\pm0.004$ non-linear) -- an order of magnitude smaller shift than
+the PIE~$\to$~JAAD case. Separability and task performance are
+therefore not simply decoupled in the sense of moving in opposite
+directions; rather, the training procedure's measurable effect on the
+representation tracks whether it helps the task at all. Where GRL +
+contrastive meaningfully changes cross-dataset AUC (for better, on
+stacked-GRU in both directions and cross-attention PIE~$\to$~JAAD), it
+also meaningfully changes probe separability, always upward, never
+downward; where it does not help (cross-attention JAAD~$\to$~PIE), it
+leaves the representation close to where the unmodified baseline left
+it, and the AUC change in that case is presumably driven by something
+else in training (e.g.\ optimization dynamics specific to this
+architecture and direction) rather than by any representational shift
+this probe can detect. This refines, rather than weakens, our reading
+in Section~\ref{sec:results-probe}: literal domain-invariance is not
+what GRL + contrastive achieves in any condition we test, and the
+magnitude of its (upward) effect on separability appears coupled to
+whether it changes task behavior at all, not decoupled from it as a
+simpler "always more separable" story would suggest.
+
+\begin{table}[t]
+\centering
+\caption{Cross-attention probe accuracy, both transfer directions.
+Baseline uses the checkpoint trained on the row's source dataset
+(PIE-trained for the PIE$\to$JAAD row, JAAD-trained for JAAD$\to$PIE).}
+\label{tab:probe-crossattn}
+\begin{tabular}{lcc}
+\toprule
+Condition & Linear acc. & MLP acc. \\
+\midrule
+Baseline (PIE-trained) & $0.844\pm0.006$ & $0.846\pm0.000$ \\
+GRL + contrastive, PIE$\to$JAAD & $0.967\pm0.009$ & $0.952\pm0.020$ \\
+\midrule
+Baseline (JAAD-trained) & $0.845\pm0.004$ & $0.828\pm0.033$ \\
+GRL + contrastive, JAAD$\to$PIE & $0.851\pm0.003$ & $0.844\pm0.004$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Cross-attention architecture (box-anchored fusion), corrected
+labels, $n=6$ seeds. Compare against Table~\ref{tab:fixes}'s
+stacked-GRU numbers for the same comparison on SF-GRU.}
+\label{tab:crossattn}
+\begin{tabular}{lcc}
+\toprule
+Method & PIE$\to$JAAD & JAAD$\to$PIE \\
+\midrule
+Baseline (no adaptation) & $0.513\pm0.009$ & $0.512\pm0.188$ \\
+GRL + contrastive & $0.559\pm0.027$ & $0.446\pm0.063$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{A Third Architecture: The Recipe Can Actively Hurt}
+\label{sec:results-uncertainty}
+
+We test a third, again structurally distinct architecture:
+uncertainty-weighted fusion, in which each modality is independently
+GRU-encoded and fused by a softmax over per-modality inverse-variance
+weights (a learned confidence-weighted average) rather than sequential
+concatenation (SF-GRU) or query-anchored attention (cross-attention).
+This architecture is not an arbitrary third choice: it is the
+strongest \emph{unadapted} baseline we find in an 8-way cross-dataset
+architecture sweep (PIE~$\to$~JAAD AUC $0.585\pm0.009$, $n=3$,
+exceeding SF-GRU's $0.498\pm0.009$ and cross-attention's
+$0.513\pm0.009$ by a wide margin), making it the best-motivated
+candidate for testing whether domain-adversarial training adds value
+on top of an architecture that already generalizes comparatively well
+without any adaptation. We apply the same GRL + contrastive recipe,
+default hyperparameters, box-embedding contrastive tap on this
+architecture's own independent box encoder output, $n=6$ seeds per
+direction.
+
+Table~\ref{tab:uncertainty} shows the recipe does not help here, and on
+PIE~$\to$~JAAD actively \emph{hurts}: AUC falls from $0.585\pm0.009$ to
+$0.499\pm0.072$, a drop that clears the two conditions' pooled standard
+deviation and is the only case in this paper where GRL + contrastive
+significantly \emph{under}performs an architecture's own unadapted
+baseline. JAAD~$\to$~PIE also falls ($0.377\pm0.046 \to
+0.351\pm0.060$), though this difference does not clear pooled standard
+deviation. Combined with the cross-attention result
+(Section~\ref{sec:results-crossattn}), only one of three architectures
+we test (SF-GRU) shows the recipe helping in \emph{both} transfer
+directions; cross-attention shows it helping in one and not
+distinguishable from baseline in the other; uncertainty-weighted fusion
+shows it significantly hurting in one and not distinguishable from
+baseline (trending down) in the other. We revise our framing
+accordingly: the earlier characterization of this recipe as producing
+a ``partial, principled fix'' understates how architecture-contingent
+it is. A more accurate summary is that GRL + contrastive is a
+reproducible fix for SF-GRU's specific stacked-fusion topology, whose
+mechanism (per Sections~\ref{sec:results-probe}
+and~\ref{sec:results-crossattn}) does not appear to be literal
+representational alignment, and which does not transfer as a
+recommended recipe to the two alternative fusion mechanisms we
+test -- one of which it actively harms on its strongest baseline.
+
+\begin{table}[t]
+\centering
+\caption{Uncertainty-weighted fusion architecture, corrected labels.
+Baseline is $n=3$ (from the 8-way architecture sweep); GRL + contrastive
+is $n=6$. $\downarrow^{*}$ = drop clears pooled standard deviation;
+$\downarrow$ = point estimate falls but not significantly at this $n$.}
+\label{tab:uncertainty}
+\begin{tabular}{lccc}
+\toprule
+Method & PIE$\to$JAAD & JAAD$\to$PIE & Verdict \\
+\midrule
+Baseline (no adaptation) & $0.585\pm0.009$ & $0.377\pm0.046$ & -- \\
+GRL + contrastive & $0.499\pm0.072$ & $0.351\pm0.060$ & $\downarrow^{*}$/$\downarrow$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{A Pretrained Trajectory Representation Does Not Help}
+\label{sec:results-pretrained-traj}
+
+Gesnouin~et~al.~\cite{gesnouin2022} report that generic,
+ImageNet/Sports1M-pretrained visual backbones generalize better under
+PIE/JAAD domain shift than crossing-intention-specific visual
+architectures -- motivating us to test the analogous question for the
+\emph{motion} modality: does a box-trajectory representation pretrained
+on a broader distribution than either dataset's own labeled training
+pool generalize better cross-dataset than SF-GRU's from-scratch box
+GRU? Lacking access to a large external trajectory corpus, we pretrain
+a small Transformer encoder with a masked-frame reconstruction
+objective (BERT-style: random frames of a box-delta sequence are
+masked and predicted from context) on the pooled, \emph{unlabeled}
+box-delta trajectories from both PIE's and JAAD's train and validation
+splits combined -- a broader motion distribution than either dataset's
+own labeled training pool alone, though a materially weaker substitute
+for a genuine large-scale external corpus (e.g.\ Waymo Open Motion or
+Argoverse~2), which we did not have local access to. We then freeze
+this encoder and splice its per-timestep output into SF-GRU's box GRU
+slot in place of the raw 4-dimensional box delta, training only the
+downstream fusion (the box GRU, now consuming a 64-dimensional
+embedding, and everything after it) under the same GRL + contrastive
+recipe and default hyperparameters as Section~\ref{sec:results-dann}.
+
+Table~\ref{tab:pretrained-traj} shows this does not help, and in fact
+underperforms both the from-scratch GRL + contrastive result and, in
+both directions, the plain unadapted baseline
+(Table~\ref{tab:baseline}: $0.498$ and $0.402$). We do not read this as
+evidence against a pretrained-backbone strategy in general, and we are
+explicit about a confound in this experiment beyond corpus size alone:
+our pretraining pool is drawn from PIE's and JAAD's \emph{own} train
+and validation splits, the same two datasets used for the downstream
+cross-dataset evaluation, whereas the visual-backbone analogy this
+experiment is motivated by (Gesnouin~et~al.) concerns a backbone
+pretrained on data with no relationship to either evaluation
+domain. A self-supervised objective trained on a mixture of the source
+and target domains has no pressure to discard whatever
+dataset-identifying structure (frame rate, box-annotation convention,
+scale) distinguishes the two -- indeed, our own probe methodology
+(Section~\ref{sec:method-probe}) shows PIE and JAAD are separable from
+nearly any representation of their inputs, including a single scalar
+track length. It is therefore not clear whether this experiment tested
+"does motion pretraining help cross-dataset transfer" or something
+closer to "does an encoder pretrained to reconstruct a mixture of both
+domains' own trajectories help," which is a different, and less
+informative, question. Corpus size (a few hundred trajectories, vs.\
+ImageNet's millions of images) compounds this: unlike a frozen VGG16
+backbone pretrained on a large, source/target-independent corpus, a box
+encoder pretrained on a small pool drawn from the very datasets under
+study does not obviously carry information beyond what the
+from-scratch, task-supervised box GRU already has access to, and the
+added representation bottleneck (a frozen, non-task-tuned embedding
+standing between the raw trajectory and the classification objective)
+may cost more than the pretraining gives back at this scale. Isolating
+which of these two factors -- domain composition or corpus size --
+drives the negative result (for instance, by pretraining on PIE alone
+and evaluating JAAD~$\to$~PIE, or vice versa, so the pretraining
+corpus excludes the source domain entirely) is a direction for future
+work we did not pursue here.
+
+\begin{table}[t]
+\centering
+\caption{Frozen pretrained trajectory encoder spliced into the box
+modality, GRL + contrastive recipe, default hyperparameters, corrected
+labels, $n=6$ seeds. Compare against Table~\ref{tab:fixes}'s
+from-scratch-box GRL + contrastive row (default hyperparameters:
+$0.618\pm0.019$ / $0.583\pm0.073$).}
+\label{tab:pretrained-traj}
+\begin{tabular}{lcc}
+\toprule
+Method & PIE$\to$JAAD & JAAD$\to$PIE \\
+\midrule
+GRL + contrastive, pretrained traj.\ box & $0.489\pm0.019$ & $0.440\pm0.089$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Split Sensitivity Is Not Explained by Video-Level Leakage}
+\label{sec:results-leakage}
+
+SF-GRU-family cross-dataset results are also sensitive to which
+train/val/test partition is used within a dataset. Under JAAD's
+official default split, our GRL + contrastive model reaches
+PIE~$\to$~JAAD AUC $0.621\pm0.017$; under a random per-pedestrian
+partition (\texttt{data\_split\_type=`random'}, ratios
+$[0.5,0.4,0.1]$, freshly redrawn per run), the same method scores
+$0.511\pm0.036$ -- a substantial drop. Because a per-pedestrian random
+split does not guarantee that all pedestrians from a given video stay
+in the same split, we hypothesized this drop was explained by
+train/test video overlap: the default random split places $52\%$ of
+JAAD pedestrians and (via a pedestrian-count coincidence) effectively
+$100\%$ of PIE pedestrians in videos that appear on both sides of the
+train/test boundary. We built a video-grouped variant of the random
+split (Section~\ref{sec:method-probe}'s counterpart for splitting,
+grouping all pedestrians in a video before partitioning, guaranteeing
+zero video overlap) and re-ran the same method under it. Contrary to
+our hypothesis, video-grouped-split AUC is \emph{lower}, not higher,
+than the leaky pedestrian-level random split: $0.445\pm0.054$ ($n=3$)
+vs.\ $0.511\pm0.036$. Video-level leakage is therefore not the
+explanation for the default-split-vs-random-split gap; the true cause
+remains open. We report this as a negative result rather than
+discarding it, since it rules out what seemed the most likely
+explanation and narrows the space of remaining hypotheses (e.g.\ the
+default splits may differ systematically in scene composition or
+pedestrian-behavior distribution in a way a random partition does not
+control for).
+
+\subsection{Summary of Everything Attempted}
+\label{sec:results-summary}
+
+Table~\ref{tab:summary} collects every fix attempt in this paper in one
+place, since the individual results are otherwise spread across seven
+subsections written around different hypotheses, with a verdict
+computed against pooled standard deviation rather than by eye. Of the
+twelve non-baseline interventions, only the domain-adversarial family
+(GRL alone, GRL + contrastive) improves PIE~$\to$~JAAD \emph{and}
+JAAD~$\to$~PIE on the primary architecture (SF-GRU) by more than
+pooled noise in both directions. The geometry- and normalization-based
+fixes (rows 2--5) all significantly \emph{hurt} PIE~$\to$~JAAD and are
+statistically indistinguishable from baseline on JAAD~$\to$~PIE -- not
+the symmetric two-direction harm a first read of the raw numbers might
+suggest, since JAAD~$\to$~PIE's wide baseline variance (row 1;
+Section~\ref{sec:results-discussion}) absorbs differences that would
+be significant in the other direction. Synthetic speed and the
+pretrained trajectory representation (rows 10--11) both significantly
+hurt \emph{both} directions relative to the tuned headline recipe;
+mixup (row 9) is statistically indistinguishable from it in both
+directions despite its lower point estimate. Applied to the two
+alternative fusion architectures (rows 12--13), the recipe's record is
+mixed-to-negative: on cross-attention it significantly helps
+PIE~$\to$~JAAD and is statistically indistinguishable from its own
+baseline (not significantly worse) on JAAD~$\to$~PIE; on
+uncertainty-weighted fusion -- the strongest unadapted baseline of any
+architecture we test -- it significantly \emph{hurts} PIE~$\to$~JAAD
+and trends down (not significant) on JAAD~$\to$~PIE. Only SF-GRU shows
+the recipe helping in both directions. We read this table as the
+paper's most concise evidence for its central claim: cross-dataset
+collapse in this model family is not fixed by any single targeted
+intervention we tried except domain-adversarial training on SF-GRU
+specifically, and that fix is not just partial but architecture-
+contingent, actively harmful on at least one alternative architecture's
+strongest baseline.
+
+\begin{table}[t]
+\centering
+\caption{Every intervention attempted in this paper, both transfer
+directions, corrected labels. SF-GRU (stacked fusion) unless noted; row
+4 (homography) is the metric ground-plane reprojection of
+Section~\ref{sec:method-geometry}, row 5 drops the box modality
+entirely. Verdict is $\uparrow$/$\downarrow$/$\approx$ relative to the
+stated baseline, where $\approx$ means the difference is smaller than
+the two conditions' pooled standard deviation (i.e.\ not
+distinguishable at this $n$) -- rows 2--8 compare against the unadapted
+baseline (row 1); rows 9--11 compare against GRL + contrastive tuned
+(row 8); rows 12--13 compare against their own architecture's unadapted
+baseline (Tables~\ref{tab:crossattn} and~\ref{tab:uncertainty}).}
+\label{tab:summary}
+\small
+\begin{tabular}{lccc}
+\toprule
+Intervention & PIE$\to$JAAD & JAAD$\to$PIE & Verdict \\
+\midrule
+1. Baseline (no fix) & $0.498\pm0.009$ & $0.402\pm0.138$ & -- \\
+2. Scale-norm & $0.437\pm0.025$ & $0.536\pm0.063$ & $\downarrow$/$\approx$ \\
+3. Height-norm & $0.390\pm0.017$ & $0.554\pm0.104$ & $\downarrow$/$\approx$ \\
+4. Homography & $0.406\pm0.011$ & $0.544\pm0.053$ & $\downarrow$/$\approx$ \\
+5. No-box & $0.385\pm0.009$ & $0.432\pm0.085$ & $\downarrow$/$\approx$ \\
+6. Contrastive only & $0.558\pm0.028$ & $0.450\pm0.107$ & $\uparrow$/$\approx$ \\
+7. GRL only & $0.608\pm0.030$ & $0.587\pm0.069$ & $\uparrow$/$\uparrow$ \\
+8. GRL+contrastive (tuned) & $\mathbf{0.621\pm0.017}$ & $\mathbf{0.613\pm0.071}$ & $\uparrow$/$\uparrow$ \\
+9.\ + mixup & $0.580\pm0.077$ & $0.537\pm0.079$ & $\approx$/$\approx$ \\
+10.\ + synth.\ speed & $0.602\pm0.001$ & $0.430\pm0.072$ & $\downarrow$/$\downarrow$ \\
+11.\ + pretrained traj.\ & $0.489\pm0.019$ & $0.440\pm0.089$ & $\downarrow$/$\downarrow$ \\
+12.\ Cross-attn.\ & $0.559\pm0.027$ & $0.446\pm0.063$ & $\uparrow$/$\approx$ \\
+13.\ Uncertainty fusion & $0.499\pm0.072$ & $0.351\pm0.060$ & $\downarrow$/$\approx$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Discussion}
+\label{sec:results-discussion}
+
+Four results together shape our interpretation. First, geometry- and
+normalization-based fixes are uniformly ineffective
+(Section~\ref{sec:results-geometry}), ruling out the most
+straightforward explanation (differing camera setups) for
+cross-dataset collapse. Second, the modality-ablation result
+(Section~\ref{sec:results-ablation}) and the probe results
+(Section~\ref{sec:results-probe}) together point away from a
+single-modality, single-cause account: visual context matters most to
+zero out, yet the mechanism that helps most (GRL) does not work by
+suppressing a detectable dataset signal -- it \emph{increases} that
+signal's detectability while improving task performance. We read this
+as evidence that GRL's practical benefit in this setting is closer to
+a generic regularization effect on the fused representation (e.g.\
+reducing reliance on dataset-specific spurious correlations the main
+task loss alone would otherwise fit) than to the literal
+representation-alignment mechanism it is designed around, echoing
+similar decoupling results reported for DANN-family methods outside
+this domain. Third, the cross-attention replication
+(Section~\ref{sec:results-crossattn}) sharpens this reading further:
+probing both transfer directions shows the separability increase is
+not a fixed side effect of the training procedure, but tracks whether
+GRL + contrastive changes task behavior at all -- large where it helps
+(PIE~$\to$~JAAD on both architectures, JAAD~$\to$~PIE on stacked-GRU)
+and negligible where it does not (JAAD~$\to$~PIE on cross-attention). A
+representation-alignment account predicts a consistent effect on
+separability regardless of whether AUC improves; what we observe -- the
+separability shift and the AUC shift rising and falling together in
+magnitude, even though the AUC shift is not always positive -- is more
+consistent with GRL + contrastive perturbing the representation only
+when it meaningfully engages with training at all, and that engagement
+sometimes helping and sometimes hurting the task depending on
+architecture-specific training dynamics. The uncertainty-weighted
+fusion result (Section~\ref{sec:results-uncertainty}) is the sharpest
+data point for this view: applied to the architecture with the
+\emph{best} unadapted baseline of any we test, the same recipe
+significantly \emph{degrades} it. If GRL + contrastive's benefit came
+from a mechanism intrinsic to domain-adversarial training working
+correctly, we would not expect it to reliably help one architecture
+and reliably hurt another; a generic-regularizer account, where the
+training procedure's effect on a given architecture's specific
+optimization landscape can go either way, accommodates this more
+naturally than an account in which the method's success is attributed
+to achieving its nominal objective. Fourth, the persistent, large
+JAAD~$\to$~PIE variance across
+nearly every method in Tables~\ref{tab:fixes},~\ref{tab:crossattn},
+and~\ref{tab:uncertainty}
+deserves an explicit alternative explanation before we attribute it to
+the benchmark's scene composition: JAAD's default-split training set
+has 103 labeled sequences, against PIE's 796 -- an 8-fold difference --
+so JAAD-as-source runs are trained on a much smaller, and therefore
+individually noisier, sample than PIE-as-source runs, quite apart from
+any property of \emph{which} scenes each dataset contains. A smaller
+source training set producing a noisier decision boundary, and hence
+higher-variance transfer to any target, is a mundane statistical
+explanation that competes directly with a benchmark-composition
+account, and our experiments do not distinguish between them: every
+JAAD-as-source condition in this paper confounds ``JAAD'' with
+``the smaller-training-set direction.'' The counter-hypothesis
+split-sensitivity result (Section~\ref{sec:results-leakage}) is
+consistent with either account. We flag this rather than resolve it: a
+clean test would hold training-set size fixed (e.g.\ subsampling PIE's
+source training set to JAAD's size) and check whether PIE~$\to$~JAAD
+variance rises to match, which we did not run. Together, this and the
+split-sensitivity result suggest that some of
+this task's difficulty is a property of the benchmark itself --
+scene composition, training-set size, or both -- rather than purely a
+property of any model or training method evaluated on it. We view
+robust cross-dataset pedestrian intent prediction as still substantially
+unsolved, with our contribution best read as (a) a fix that is
+reproducible and genuinely useful for one specific architecture
+(SF-GRU's stacked fusion) but is not a general-purpose recipe --
+tested on two further, structurally distinct architectures, it helps
+partially on one and significantly hurts the other's best baseline in
+at least one direction -- together with a mechanistic account
+(Sections~\ref{sec:results-probe}--\ref{sec:results-uncertainty}) of
+why its effect is architecture-contingent rather than a property of
+whether it achieves genuine domain-invariance, and (b) a set of
+ruled-out hypotheses -- geometry, video-level leakage, a missing speed
+modality, and a locally-pretrained trajectory representation -- that we
+hope narrows the search space for future work more than our single
+positive result advances it.

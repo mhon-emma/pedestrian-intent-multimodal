@@ -1,0 +1,326 @@
+% method.tex
+% Method section. Describes the SF-GRU architecture this paper evaluates
+% (originally proposed by Rasouli et al., BMVC 2019 -- see
+% rasouli2020sfgru in refs.bib), the JAAD labeling artifact this paper
+% identifies and corrects, and the domain-adversarial + contrastive
+% training protocol that forms this paper's core positive result.
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Base Architecture: SF-GRU}
+\label{sec:method-sfgru}
+
+We evaluate SF-GRU (Stacked-Fusion GRU)~\cite{rasouli2020sfgru}, a
+pedestrian crossing-intention architecture originally proposed by
+Rasouli~et~al. SF-GRU processes each input modality with its own
+single-layer GRU, concatenates that GRU's output sequence with the raw
+features of the next modality, and feeds the result into the next GRU in
+the stack; the final GRU's last hidden state is passed through a linear
+layer and sigmoid to produce a crossing probability. We use the
+following modality order, matching the original paper and its released
+implementation: local cropped-pedestrian appearance
+(\texttt{local\_box}), local surrounding scene context
+(\texttt{local\_context}), 2D body pose (\texttt{pose}), and raw
+bounding-box trajectory (\texttt{box}). \texttt{local\_box} and
+\texttt{local\_context} are 512-dimensional per-frame features pooled
+from a frozen, ImageNet-pretrained VGG16 backbone; \texttt{pose} is a
+36-dimensional per-frame keypoint vector (18 keypoints $\times$ 2D
+coordinates) from RTMPose~\cite{rtmpose}; \texttt{box} is a 4-dimensional
+bounding-box coordinate delta. We exclude ego-vehicle speed from our
+main results (Section~\ref{sec:method-crossprotocol}) and separately
+test a synthesized speed signal for JAAD
+(Section~\ref{sec:method-speed}). All modalities are observed over a
+15-frame window sampled 60 frames before the annotated crossing/non-crossing
+event, matching the original protocol's observation and
+time-to-event parameters.
+
+We use a PyTorch reimplementation of the original Keras/TensorFlow SF-GRU
+that preserves the model architecture, data-preparation logic (frame
+sampling, class-balancing via horizontal-flip augmentation of the
+minority class on the training split only, bounding-box normalization),
+and training protocol (AdamW, focal binary cross-entropy loss, an
+$F_1$-maximizing decision threshold selected on a held-out validation
+split), differing from the original only in framework and in using
+RTMPose in place of OpenPose for keypoint extraction.
+
+\subsection{Datasets}
+\label{sec:method-data}
+
+We use the two datasets SF-GRU was originally evaluated
+on: PIE~\cite{rasouli2019pie} (6 hours of continuous ego-vehicle
+footage, Toronto, Canada; standard split: train~=~set01+02+04,
+val~=~set05+06, test~=~set03) and
+JAAD~\cite{rasouli2017jaad} (346 short clips, 2 vehicles, 3 dashcam
+models, 5 countries; default split with an official train/val/test
+partition). Both datasets provide per-frame bounding boxes and a
+per-pedestrian crossing-intention label; we follow each dataset's
+standard \texttt{seq\_type=`crossing'} sequence-generation protocol.
+
+\subsection{A Labeling Artifact in JAAD's Default Configuration}
+\label{sec:method-labelbug}
+
+JAAD's pedestrian identifiers fall into three categories, distinguishable
+by a substring in the pedestrian ID: bystanders (identifiers containing
+\texttt{`p'}), pedestrians with full behavioral annotation
+(identifiers containing \texttt{`b'}), and a remaining category with
+neither marker. The dataset loader's \texttt{\_get\_crossing()} function
+excludes bystanders explicitly, but for pedestrians in the third,
+unmarked category it hard-codes both the crossing label and the
+observation endpoint (\texttt{acts\,=\,[[0]]},
+\texttt{event\_frame\,=\,-1}) regardless of that pedestrian's actual
+behavior, because no behavioral annotation exists to determine it. The
+dataset loader's public interface exposes a \texttt{sample\_type}
+parameter (default \texttt{`all'}) that controls whether these
+unmarked-category pedestrians are included; the standard, published
+convention -- matching the \emph{JAAD\_behavior} subset used to report
+the 686-instance pedestrian count cited in prior
+work~\cite{kotseruba2021pcpa} -- is \texttt{sample\_type=`beh'},
+restricting to only the fully behaviorally-annotated (\texttt{`b'})
+category.
+
+Because \texttt{sample\_type} defaults to \texttt{`all'} and no
+downstream training script in the codebase we built on overrides it, every
+JAAD-side experiment we initially ran silently trained and evaluated
+against a label distribution in which 72--80\% of samples per split
+(depending on split) carry a label that is not a behavioral observation
+but a fallback constant. This is not merely severe class imbalance: the
+label for the majority of samples is definitionally uninformative,
+independent of any true crossing behavior. We discovered this by
+noticing an anomalously low, near-constant positive rate (9.2--9.9\%
+across splits) that did not match the literature's reported
+JAAD\_behavior base rates, then confirmed it by direct inspection of the
+dataset loader's source and cross-checked with an independent
+literature audit. Correcting to \texttt{sample\_type=`beh'} raises the
+positive rate to 62--83\% across splits (train 82.6\%, val 73.9\%, test
+62.6\%) and reduces the usable JAAD training set from several hundred
+samples to 195 -- a real, unavoidable cost of the fix, since the
+excluded pedestrians genuinely lack behavioral ground truth and cannot
+be relabeled. PIE has no equivalent unmarked-pedestrian category and is
+unaffected. \emph{All results in this paper use the corrected
+\texttt{sample\_type=`beh'} configuration.} We flag this as a
+methodological finding independent of our other results: because this
+default is silent and the resulting label distribution is not
+obviously degenerate (a near-10\% positive rate is plausible on its
+face for a crossing-intention task), any prior work built on this
+dataset loader without explicitly setting \texttt{sample\_type} is at
+risk of the same corruption, and we recommend the community audit
+downstream JAAD-based pipelines for this default.
+
+\subsection{Cross-Dataset Evaluation Protocol}
+\label{sec:method-crossprotocol}
+
+The original SF-GRU evaluation, like nearly all pedestrian
+crossing-intention work we are aware of prior to
+Gesnouin~et~al.~\cite{gesnouin2022} and including all 2024--2026 work
+surveyed in Section~\ref{sec:related}, trains and tests within a single
+dataset. To assess generalization under dataset shift, we additionally
+adopt the cross-dataset protocol of~\cite{gesnouin2022}: a model is
+trained (and its decision threshold tuned) on one dataset's train/val
+split, then evaluated, unchanged, on the \emph{other} dataset's held-out
+test split. We report both directions, PIE~$\to$~JAAD and
+JAAD~$\to$~PIE.
+
+Because PIE's \texttt{speed} channel is a continuous ego-vehicle OBD
+sensor reading with no JAAD equivalent -- the original implementation
+substitutes a discrete \texttt{vehicle\_act} encoding in JAAD's
+\texttt{speed} slot -- we exclude \texttt{speed} entirely for our main
+cross-dataset experiments, following the same exclusion
+in~\cite{gesnouin2022}, to avoid conflating a feature-semantics mismatch
+with genuine domain shift. Our main results therefore use models
+trained on \texttt{\{local\_box, local\_context, pose, box\}}.
+
+\subsection{Ruling Out Camera Geometry}
+\label{sec:method-geometry}
+
+A natural hypothesis is that PIE and JAAD's differing camera
+installations (PIE: single vehicle, fixed, published intrinsic and
+extrinsic calibration, including fisheye distortion coefficients;
+JAAD: multiple vehicles, no published calibration) explain cross-dataset
+failure through a recoverable geometric mismatch rather than a learned
+one. We test this directly by projecting each pedestrian's foot point to
+ground-plane metric coordinates using PIE's real published calibration
+(camera height 1.270\,m, pitch $-10^\circ$, full intrinsic matrix and
+fisheye distortion model) and researched estimates for JAAD (height
+1.40\,m, pitch $-5^\circ$, intrinsics rescaled from PIE's to JAAD's
+frame width), then retraining SF-GRU on the resulting metric-space
+trajectory instead of raw pixel deltas. We validate the projection
+independently by checking that the implied real-world pedestrian speed
+distribution is physically plausible (mean 0.32\,m/s, 100\% within
+$[0,3]$\,m/s) before using it for training. We additionally sweep
+JAAD's unknown camera height ($1.2$--$1.6$\,m) and pitch ($-3^\circ$ to
+$-10^\circ$) over 20 grid points, reusing a single trained checkpoint's
+cached features and varying only the ground-plane projection at
+evaluation time, to test whether \emph{any} plausible camera-parameter
+choice for JAAD changes the outcome (Section~\ref{sec:results-geometry}).
+
+\subsection{Domain-Adversarial Training}
+\label{sec:method-dann}
+
+Motivated by ruling out geometry (Section~\ref{sec:results-geometry})
+and a per-modality zeroing ablation
+(Section~\ref{sec:results-ablation}) that localizes cross-dataset
+sensitivity to the visual context branch rather than the raw box
+trajectory, we train SF-GRU under an unsupervised domain-adaptation
+(UDA) protocol: a Domain-Adversarial Neural Network
+(DANN)~\cite{ganin2015dann}. A domain classifier, reached from the
+model's final fused hidden state through a Gradient Reversal Layer
+(GRL), is trained to predict which dataset (source or target) a sample
+came from; the main network is trained, via the reversed gradient, to
+make that prediction as difficult as possible. The source dataset is
+fully supervised (crossing labels and domain label); the target
+dataset's train-split \emph{inputs only} are used for the domain
+adversary, its labels and held-out val/test splits never touched during
+training -- the same train-on-source, evaluate-unchanged-on-target
+protocol as our other cross-dataset experiments, with the addition of
+unlabeled target inputs available at training time for the domain
+classifier.
+
+We additionally combine the GRL with a contrastive scale-invariance
+term: for each source-domain training batch, we synthesize a second
+``view'' of each sample by randomly rescaling its box trajectory around
+a fixed center (simulating the same physical motion filmed at a
+different distance or focal length), extract the box modality's own GRU
+hidden state for both views, and apply an NT-Xent contrastive loss
+pulling the two views' embeddings together while pushing apart other
+samples in the batch. This trains the box embedding to encode motion
+pattern rather than absolute pixel scale, independently of the GRL's
+broader domain-adversarial pressure on the fused representation. The
+total training loss is $\mathcal{L} = \mathcal{L}_{\text{crossing}} +
+\lambda_{\text{dom}} \mathcal{L}_{\text{domain}} +
+\lambda_{\text{con}} \mathcal{L}_{\text{contrastive}}$, with
+$\lambda_{\text{dom}}=1.0$ and the DANN gradient-reversal coefficient
+following the standard sigmoid ramp schedule of~\cite{ganin2015dann}. We
+report both the a~priori default contrastive hyperparameters
+($\lambda_{\text{con}}=0.5$, NT-Xent temperature $0.2$) and a small
+follow-up grid search over $\lambda_{\text{con}} \in
+\{0.25,0.5,1.0\}$, temperature $\in \{0.1,0.2,0.4\}$
+(Section~\ref{sec:results-dann}), confirming any selected configuration
+at $n=6$ seeds before reporting it as a headline number.
+
+\subsection{Representational Invariance Probe}
+\label{sec:method-probe}
+
+To test whether the GRL's domain-adversarial training achieves the
+representational invariance it is designed to produce, we take a
+trained checkpoint's final fused hidden state on held-out PIE and JAAD
+test data and fit a \emph{separate}, freshly-initialized classifier --
+never touching the original model's weights -- to predict which dataset
+each representation came from. We report both a linear probe (logistic
+regression) and a small non-linear probe (2-layer MLP, 32 hidden units,
+early stopping) to rule out a linear probe being too weak to detect
+invariant structure a stronger probe would find, averaged over 5
+independent random train/test splits of the probe's own data. This is
+deliberately distinct from the GRL's own in-training domain-accuracy
+diagnostic, which is trained adversarially against a simultaneously
+changing feature extractor and is not a reliable measure of the final,
+frozen representation's actual separability
+(Section~\ref{sec:results-probe}). We additionally report a trivial
+control -- a probe given only each sample's track length, a single
+scalar carrying no pedestrian-behavior information -- to establish how
+separable PIE and JAAD are from a dataset-fingerprint statistic alone.
+
+\subsection{Second-Architecture Replication}
+\label{sec:method-crossattn}
+
+All results above use SF-GRU's stacked, sequential fusion (each
+modality's GRU output concatenated into the next modality's input,
+Section~\ref{sec:method-sfgru}). To test whether the GRL + contrastive
+recipe's effect and the probe dissociation are specific to this fusion
+mechanism, we implement the same GRL + contrastive training recipe
+(Section~\ref{sec:method-dann}) on a structurally distinct fusion
+design: box-anchored cross-attention. Each modality is encoded
+independently by its own GRU (returning the full hidden-state
+sequence, not just the final state); the box modality's encoded
+sequence serves as the attention query, the concatenation of every
+other modality's encoded sequence serves as the key/value context, and
+the attended output is passed through one further GRU before the
+classification head -- mirroring the box-anchored design used in
+prior cross-modal-attention variants of SF-GRU, but, to our knowledge,
+never previously evaluated under the cross-dataset protocol. The GRL
+and NT-Xent contrastive taps are placed at the analogous points to
+the stacked-GRU model: the GRL reads the final post-attention GRU's
+hidden state (the same representation the classification head reads),
+and the contrastive term reads the box modality's own encoder output.
+We train this architecture at the a~priori default contrastive
+hyperparameters ($\lambda_{\text{con}}=0.5$, temperature $0.2$,
+Section~\ref{sec:method-dann}) rather than re-sweeping for this
+architecture specifically, since the goal is to test whether the
+recipe's effect generalizes, not to find its separately-optimal
+hyperparameters here; $n=6$ seeds per direction, matching our other
+headline confirmations.
+
+\subsection{Third-Architecture Replication}
+\label{sec:method-uncertainty}
+
+We additionally test a third fusion mechanism: uncertainty-weighted
+fusion, in which each modality is encoded independently by its own GRU
+into a single final hidden state (no attention or sequential
+concatenation), a per-modality log-variance is predicted from that
+hidden state by a small linear head, and the modalities are combined by
+a softmax over negative log-variance (an inverse-variance,
+confidence-weighted average) before the classification head. We choose
+this architecture specifically, rather than an arbitrary third choice,
+because it is the strongest \emph{unadapted} baseline in an 8-way
+cross-dataset architecture sweep we ran across every fusion mechanism
+implemented in this codebase (PIE~$\to$~JAAD AUC $0.585\pm0.009$,
+$n=3$, versus SF-GRU's $0.498\pm0.009$) -- making it the best-motivated
+test of whether domain-adversarial training adds value on top of an
+architecture that already transfers comparatively well without any
+adaptation. The GRL and contrastive taps read, respectively, the fused
+(post-uncertainty-weighting) representation and the box modality's own
+independent encoder output (available directly here, since each
+modality's encoder is independent rather than embedded mid-sequence in
+a shared stack). Same protocol as Section~\ref{sec:method-crossattn}:
+default contrastive hyperparameters, $n=6$ seeds per direction.
+
+\subsection{Pretrained Trajectory Representation}
+\label{sec:method-pretrained-traj}
+
+Motivated by Gesnouin~et~al.'s~\cite{gesnouin2022} finding that generic
+pretrained visual backbones generalize better under PIE/JAAD domain
+shift than task-specific ones, we test whether the same holds for the
+box-trajectory modality specifically. We pretrain a small Transformer
+encoder (2 layers, 4 attention heads, 64-dimensional hidden size) on a
+masked-frame reconstruction objective: for each box-delta sequence in a
+pooled, unlabeled corpus (PIE's and JAAD's train and validation splits
+combined, crossing labels never touched), a random subset of frames is
+replaced with a learned mask token and the encoder must reconstruct
+each masked frame's true 4-dimensional delta from the unmasked context,
+trained with mean-squared-error loss on masked positions only. After
+pretraining, we freeze the encoder and splice its per-timestep output
+into SF-GRU's box GRU slot in place of the raw box delta, training the
+box GRU (now consuming a 64-dimensional input) and everything
+downstream of it under the same GRL + contrastive recipe and default
+hyperparameters as Section~\ref{sec:method-dann}, with the pretrained
+encoder's weights held fixed throughout. We note explicitly that this
+is a weaker test of the motivating hypothesis than an ideal version
+would be, in two independent respects: our pretraining corpus (pooled
+PIE and JAAD trajectories) is far smaller and less diverse than the
+external, large-scale motion corpora (e.g.\ Waymo Open Motion,
+Argoverse~2) a genuine test would use, \emph{and} it is drawn from the
+same two datasets used for downstream cross-dataset evaluation, unlike
+Gesnouin~et~al.'s source/target-independent visual backbones. We did
+not have local access to an external motion corpus, and report this as
+a locally-feasible approximation of the intended experiment, not an
+equivalent of it (Section~\ref{sec:results-pretrained-traj}).
+
+\subsection{Synthesizing a Speed Modality for JAAD}
+\label{sec:method-speed}
+
+PIE's \texttt{speed} channel is real, continuous ego-vehicle OBD sensor
+data; JAAD has no equivalent signal, so every experiment above excludes
+speed from both datasets to keep the modality set comparable, meaning
+PIE's model never uses a real signal it natively has. We test whether
+recovering this modality for JAAD helps, by estimating a coarse
+per-frame ego-motion proxy from JAAD's raw video via dense optical flow
+(Farneback), computed over the region \emph{excluding} the pedestrian's
+own bounding box (background motion approximates ego-vehicle motion)
+and reduced to the per-frame median flow magnitude. We z-score each
+dataset's speed channel independently using training-split statistics
+before use, since PIE's real km/h-scale readings and JAAD's unitless
+optical-flow magnitude are not on a comparable absolute scale. This
+gives both datasets the full five-modality set
+(\texttt{local\_box, local\_context, pose, box, speed}) rather than the
+four-modality set used elsewhere in this paper
+(Section~\ref{sec:results-speed}).

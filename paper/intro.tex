@@ -1,0 +1,150 @@
+% intro.tex
+
+\section{Introduction}
+\label{sec:intro}
+
+Pedestrian crossing-intention prediction -- estimating, from a short
+observation window of an ego-vehicle's onboard sensors, whether a
+visible pedestrian is about to cross the vehicle's path -- is a
+safety-critical component of autonomous-driving perception stacks, and
+has accumulated a substantial architecture literature built around two
+benchmark datasets, PIE~\cite{rasouli2019pie} and
+JAAD~\cite{rasouli2017jaad}. Almost all of this literature, from the
+original SF-GRU baseline~\cite{rasouli2020sfgru} through
+PCPA~\cite{kotseruba2021pcpa} to recent transformer- and Mamba-based
+architectures~\cite{adapt2026,trajfusionnet2026,efficientpie2025},
+reports results trained and tested \emph{within} a single dataset.
+Gesnouin~et~al.~\cite{gesnouin2022} were, to our knowledge, the first to
+test the natural follow-up question -- does a model trained on one of
+these datasets generalize to the other? -- and found that it largely
+does not: cross-dataset AUC collapses to near the level of a model with
+no signal at all. No architecture paper we are aware of published since
+has re-tested this.
+
+This paper is an extended diagnosis of that collapse, carried out on
+the SF-GRU architecture, together with one partial, principled fix.
+Three things motivate treating this as a diagnosis-first paper rather
+than a methods paper. First, while investigating cross-dataset transfer
+we discovered that JAAD's standard data loader silently mislabels the
+majority of samples under its default configuration
+(Section~\ref{sec:method-labelbug}): pedestrians lacking a full
+behavioral annotation are assigned a hard-coded, definitionally
+uninformative label rather than being excluded, unless the loader's
+\texttt{sample\_type} argument is set explicitly to the literature's
+\texttt{JAAD\_behavior} convention. This is orthogonal to, and
+independent of, cross-dataset generalization -- it affects in-domain
+JAAD results too -- but every cross-dataset result in this paper (and,
+we suspect, some fraction of prior JAAD-based work using this loader)
+depends on getting it right, so we treat identifying and correcting it
+as a contribution in its own right, not merely a footnote to our main
+experiments.
+
+Second, having corrected the label issue and confirmed the
+cross-dataset collapse persists, we ran a falsification campaign
+against the most natural explanations before proposing a fix. PIE and
+JAAD were filmed with different, largely uncalibrated camera setups; a
+plausible hypothesis is that cross-dataset failure is substantially a
+recoverable geometric mismatch. We test this directly with a real
+metric-space ground-plane reprojection using PIE's published camera
+calibration and researched estimates for JAAD, together with a 20-point
+sensitivity sweep over JAAD's unknown camera parameters
+(Section~\ref{sec:results-geometry}), and find no evidence for it:
+geometric normalization does not recover performance, and no plausible
+camera-parameter choice for JAAD changes this conclusion. We similarly
+test, and rule out, video-level train/test leakage as an explanation
+for a separate, related phenomenon -- SF-GRU's sensitivity to which
+train/test partition of a dataset is used
+(Section~\ref{sec:results-leakage}). Both are reported as negative
+results because we think ruling out plausible-sounding explanations is
+useful independent of whether we found the true cause.
+
+Third, motivated by a modality-zeroing ablation localizing
+cross-dataset sensitivity to the visual scene-context branch rather
+than raw trajectory coordinates, we apply domain-adversarial training
+(a gradient-reversal domain classifier~\cite{ganin2015dann}) combined
+with a contrastive scale-invariance term~\cite{chen2020simclr} on the
+box-trajectory representation. This is, to our knowledge, the first
+application of domain-adversarial training to cross-dataset pedestrian
+crossing-intention transfer. It produces a real, seed-confirmed
+improvement over the uncorrected baseline in both transfer directions
+(PIE~$\to$~JAAD AUC $0.498\to0.621$; JAAD~$\to$~PIE AUC
+$0.402\to0.613$; $n=6$ seeds each at our best configuration) -- but we
+report this improvement without overstating it: absolute cross-dataset
+AUC remains far below typical in-domain performance for this model
+family, and we consider the gap that remains after our best fix to be
+at least as important a finding as the gap that our fix closes. We
+therefore probe \emph{why} the fix works, using an independent
+representation-separability probe distinct from the domain classifier
+used during training. We find a dissociation, not a correlation,
+between probe-measured domain separability and task performance
+(Section~\ref{sec:results-probe}): the configurations that improve
+cross-dataset AUC also make the fused representation \emph{more}, not
+less, separable by an independent probe, while a control that reduces
+separability (same-class mixup) also \emph{reduces} AUC. This suggests
+domain-adversarial training's benefit here does not operate through the
+literal representational invariance it is nominally designed to
+produce. We further test this recipe on two further, structurally
+distinct fusion architectures: box-anchored cross-attention
+(Section~\ref{sec:method-crossattn}) and uncertainty-weighted fusion
+(Section~\ref{sec:method-uncertainty}, chosen because it is the
+strongest \emph{unadapted} baseline architecture we find). On
+cross-attention, the AUC improvement holds in one direction and is not
+distinguishable from baseline in the other; probing both reveals the
+separability increase itself tracks which direction improves -- large
+where GRL + contrastive helps, negligible where it does not -- rather
+than occurring uniformly regardless of outcome
+(Section~\ref{sec:results-crossattn}). On uncertainty-weighted fusion,
+the recipe does not merely fail to help: it significantly
+\emph{degrades} the architecture's strong unadapted baseline in one
+direction and trends down, non-significantly, in the other
+(Section~\ref{sec:results-uncertainty}). We treat the combination as
+evidence for, not against, the generic-regularizer account -- a
+literal representation-alignment mechanism gives no obvious reason for
+its effect on separability to scale with whether it helps or hurts the
+task, nor for the same objective to reliably help one architecture and
+reliably hurt another -- while being explicit that our fix is a
+reproducible, useful result for SF-GRU specifically and not a
+general-purpose recipe: of three architectures tested, it helps in
+both transfer directions on only one.
+
+In summary, this paper's contributions are:
+
+\begin{enumerate}
+\item Identification and correction of a silent labeling artifact in
+JAAD's default data-loading configuration, affecting the large
+majority of samples in the default (\texttt{sample\_type=`all'})
+setting, together with a re-audit of cross-dataset collapse under the
+corrected labels confirming it is not an artifact of this bug.
+\item A falsification campaign ruling out camera-geometry mismatch
+(via real metric-space reprojection and a camera-parameter sensitivity
+sweep) and video-level train/test leakage as explanations for,
+respectively, cross-dataset collapse and split-sensitivity.
+\item A modality-zeroing ablation localizing cross-dataset sensitivity
+primarily to the visual scene-context modality rather than raw
+trajectory coordinates.
+\item A domain-adversarial and contrastive training recipe that
+partially, reproducibly ($n=6$ seeds, both directions) mitigates
+cross-dataset collapse on SF-GRU, together with an honest
+characterization of how much of the original gap it leaves unclosed.
+\item A mechanistic probe analysis showing that this recipe's benefit
+is dissociated from -- not explained by -- the representational
+invariance it is nominally trained to induce, using controls (mixup, a
+trivial track-length probe, and two further fusion architectures) to
+support this reading.
+\item A test of the recipe on two additional, structurally distinct
+fusion architectures showing it is not a general-purpose fix: it
+partially replicates on one (helping in one transfer direction) and
+significantly \emph{harms} the strongest unadapted baseline of the
+other, evidence we read as further support for the generic-regularizer
+account over a literal domain-invariance account.
+\end{enumerate}
+
+We view this paper's primary value as diagnostic: a small,
+well-controlled model family on two well-studied benchmarks, examined
+closely enough to find a real data bug, rule out two plausible-sounding
+explanations, and show that a working partial fix does not work for
+the reason it was designed to. We believe this kind of audit is
+currently under-supplied relative to the rate at which new
+architectures are proposed for these same two benchmarks
+(Section~\ref{sec:related}), none of which re-test cross-dataset
+transfer.

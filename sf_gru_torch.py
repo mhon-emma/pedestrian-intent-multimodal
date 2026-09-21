@@ -29,7 +29,7 @@ import torch.nn as nn
 from PIL import Image, ImageDraw
 from sklearn.metrics import (accuracy_score, f1_score, precision_recall_curve,
                              precision_score, recall_score, roc_auc_score,
-                             roc_curve)
+                             roc_curve,average_precision_score)
 from torchvision import models as tv_models
 from torchvision import transforms as tv_transforms
 
@@ -38,6 +38,44 @@ from utils import (bbox_sanity_check, get_path, img_pad, jitter_bbox,
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
+
+class FocalBCELoss(nn.Module):
+    """
+    Binary focal loss for sigmoid probabilities.
+
+    FL = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    Assumes model already outputs sigmoid probabilities.
+    """
+
+    def __init__(self, alpha=0.5, gamma=2.0, eps=1e-7):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.eps = eps
+
+    def forward(self, probs, targets):
+        probs = torch.clamp(probs, self.eps, 1.0 - self.eps)
+
+        pt = torch.where(
+            targets == 1,
+            probs,
+            1.0 - probs
+        )
+
+        alpha_t = torch.where(
+            targets == 1,
+            torch.full_like(targets, self.alpha),
+            torch.full_like(targets, 1.0 - self.alpha)
+        )
+
+        loss = (
+            -alpha_t
+            * ((1.0 - pt) ** self.gamma)
+            * torch.log(pt)
+        )
+
+        return loss.mean()
 
 
 class SFGRUTorch(object):
@@ -544,6 +582,68 @@ class SFGRUTorch(object):
             fid.write("%s: %s\n" % ('lr', str(lr)))
 
         print('Wrote configs to {}'.format(config_path))
+    
+    def find_best_threshold(self, data_val, saved_files_path, model_opts=None):
+        """
+        Find the validation-set probability threshold that maximizes F1.
+        """
+
+        # Load validation data in the same way test() does.
+        val_data, data_types, data_sizes = self.get_data(
+            {'test': data_val},
+            model_opts
+        )
+
+        val_data = val_data['test']
+
+        # Build and load model
+        model = self.build_model(data_types, data_sizes)
+        checkpoint_path = os.path.join(
+            saved_files_path,
+            'model.pt'
+        )
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=self.device
+        )
+
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+
+        inputs = [
+            torch.from_numpy(np.asarray(x)).float().to(self.device)
+            for x in val_data[0]
+        ]
+
+        labels = np.asarray(val_data[1]).reshape(-1)
+
+        with torch.no_grad():
+            probs = model(inputs).squeeze(-1).cpu().numpy()
+
+        thresholds = np.arange(0.05, 0.951, 0.01)
+
+        best_threshold = 0.5
+        best_f1 = -1.0
+
+        for threshold in thresholds:
+            preds = (probs >= threshold).astype(int)
+
+            score = f1_score(
+                labels,
+                preds,
+                zero_division=0
+            )
+
+            if score > best_f1:
+                best_f1 = score
+                best_threshold = threshold
+
+        print(
+            'Best validation threshold: %.2f | val F1: %.4f'
+            % (best_threshold, best_f1)
+        )
+
+        return best_threshold
 
     # -- Model -------------------------------------------------------------------
     def build_model(self, data_types, data_sizes):
@@ -551,7 +651,8 @@ class SFGRUTorch(object):
                           self._regularizer_value).to(self.device)
 
     # -- Train ---------------------------------------------------------------------
-    def train(self, data_train, batch_size=32, epochs=60, lr=0.000005, model_opts=None):
+    def train(self, data_train, data_val=None, batch_size=32, epochs=60, lr=0.000005,
+             model_opts=None, focal_alpha=0.5):
         # PID suffix avoids collisions when multiple training processes (e.g.
         # separate experiments) start within the same second and would
         # otherwise land on the same save_folder and clobber each other's
@@ -561,20 +662,40 @@ class SFGRUTorch(object):
                                          save_root_folder='data/models',
                                          file_name='model.pt')
 
-        train_val_data, data_types, data_sizes = self.get_data({'train': data_train}, model_opts)
-        train_data = train_val_data['train']
+        # train_val_data, data_types, data_sizes = self.get_data({'train': data_train, 'val': data_val}, model_opts)
+        data_dict = {'train': data_train}
+        if data_val is not None:
+            data_dict['val'] = data_val
+        train_val_data, data_types, data_sizes = self.get_data(data_dict, model_opts)
 
+        train_data = train_val_data['train']
+        val_data = train_val_data['val'] if data_val is not None else None
         model = self.build_model(data_types, data_sizes)
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=self._regularizer_value)
-        criterion = nn.BCELoss()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=self._regularizer_value)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6
+        )
+        # criterion = nn.BCELoss()
+        criterion = FocalBCELoss(alpha=focal_alpha, gamma=1.0)
 
         inputs = [torch.from_numpy(np.asarray(x)).float() for x in train_data[0]]
         labels = torch.from_numpy(np.asarray(train_data[1])).float()
 
+        if val_data is not None:
+            val_inputs = [torch.from_numpy(np.asarray(x)).float().to(self.device) for x in val_data[0]]
+            val_labels = torch.from_numpy(np.asarray(val_data[1])).float().to(self.device)      
+
+        best_val_auc = -float('inf')
+        best_epoch = -1
+
         n = labels.shape[0]
-        history = {'loss': [], 'accuracy': []}
-        model.train()
+        history = {'loss': [], 'accuracy': [], 'val_loss': [], 'val_accuracy': [], 'val_auc': []}
         for epoch in range(epochs):
+            model.train()
             perm = torch.randperm(n)
             epoch_loss = 0.0
             epoch_correct = 0
@@ -595,17 +716,53 @@ class SFGRUTorch(object):
             epoch_loss /= n
             epoch_acc = epoch_correct / n
             history['loss'].append(epoch_loss)
-            history['accuracy'].append(epoch_acc)
-            print('Epoch %d/%d - loss: %.4f - accuracy: %.4f' % (epoch + 1, epochs, epoch_loss, epoch_acc))
+            history['accuracy'].append(epoch_acc)\
 
-        print('Train model is saved to {}'.format(model_path))
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'data_types': data_types,
-            'data_sizes': data_sizes,
-            'num_hidden_units': self._num_hidden_units,
-            'regularizer_value': self._regularizer_value,
-        }, model_path)
+            if val_data is not None:
+                model.eval()
+                with torch.no_grad():
+                    val_preds = model(val_inputs).squeeze(-1)
+                    val_loss = criterion(val_preds, val_labels.squeeze(-1)).item()
+                    val_acc = ((val_preds > 0.5).float() == val_labels.squeeze(-1)).sum().item() / val_labels.size(0)
+                    val_auc = roc_auc_score(val_labels.cpu().numpy(), val_preds.cpu().numpy())
+                    history['val_loss'].append(val_loss)
+                    history['val_accuracy'].append(val_acc)
+                    history['val_auc'].append(val_auc)
+
+                    if val_auc > best_val_auc:
+                        best_val_auc = val_auc
+                        best_epoch = epoch
+                        torch.save({
+                            'model_state_dict': model.state_dict(),
+                            'data_types': data_types,
+                            'data_sizes': data_sizes,
+                            'num_hidden_units': self._num_hidden_units,
+                            'regularizer_value': self._regularizer_value,
+                        }, model_path)
+                        print('Best model saved at epoch %d with val_auc: %.4f' % (epoch + 1, best_val_auc))
+                scheduler.step(val_loss)
+                current_lr = optimizer.param_groups[0]['lr']
+
+                print('Epoch %d/%d - loss: %.4f - accuracy: %.4f - val_loss: %.4f - val_accuracy: %.4f - val_auc: %.4f' %
+                      (epoch + 1, epochs, epoch_loss, epoch_acc, val_loss, val_acc, val_auc))
+            else:
+
+                scheduler.step(val_loss if val_data is not None else epoch_loss)
+                current_lr = optimizer.param_groups[0]['lr']
+                print('Epoch %d/%d - loss: %.4f - accuracy: %.4f - lr: %.6f' % (epoch + 1, epochs, epoch_loss, epoch_acc, current_lr))
+
+        if val_data is not None:
+            print('Best model was at epoch %d with val_auc: %.4f' % (best_epoch + 1, best_val_auc))
+        else:
+
+            print('Train model is saved to {}'.format(model_path))
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'data_types': data_types,
+                'data_sizes': data_sizes,
+                'num_hidden_units': self._num_hidden_units,
+                'regularizer_value': self._regularizer_value,
+            }, model_path)
 
         model_opts_path, _ = get_path(save_folder=model_folder_name,
                                       save_root_folder='data/models',
@@ -627,7 +784,7 @@ class SFGRUTorch(object):
         return saved_files_path
 
     # -- Test ---------------------------------------------------------------------
-    def test(self, data_test, model_path=''):
+    def test(self, data_test, model_path='',threshold=0.5):
         with open(os.path.join(model_path, 'model_opts.pkl'), 'rb') as fid:
             model_opts = pickle.load(fid)
 
@@ -644,28 +801,73 @@ class SFGRUTorch(object):
             test_results = model(inputs).squeeze(-1).cpu().numpy()
         test_results = test_results.reshape(-1, 1)
 
-        acc = accuracy_score(labels, np.round(test_results))
-        f1 = f1_score(labels, np.round(test_results))
-        # AUC must use continuous scores, not rounded 0/1 predictions --
-        # rounding first collapses AUC into a near-duplicate of accuracy
-        # (both driven by the same thresholded predictions), destroying its
-        # value as an independent ranking-quality metric.
-        auc = roc_auc_score(labels, test_results)
-        roc = roc_curve(labels, test_results)
-        precision = precision_score(labels, np.round(test_results))
-        recall = recall_score(labels, np.round(test_results))
-        pre_recall = precision_recall_curve(labels, test_results)
+        predictions = (
+            test_results >= threshold
+        ).astype(int)
 
-        print('acc:{} auc:{} f1:{} precision:{} recall:{}'.format(acc, auc, f1, precision, recall))
+        # Threshold-dependent metrics
+        acc = accuracy_score(
+            labels,
+            predictions
+        )
+
+        f1 = f1_score(
+            labels,
+            predictions,
+            zero_division=0
+        )
+
+        precision = precision_score(
+            labels,
+            predictions,
+            zero_division=0
+        )
+
+        recall = recall_score(
+            labels,
+            predictions,
+            zero_division=0
+        )
+
+        # Threshold-independent metrics
+        auc = roc_auc_score(
+            labels,
+            test_results
+        )
+
+        roc = roc_curve(
+            labels,
+            test_results
+        )
+
+        pre_recall = precision_recall_curve(
+            labels,
+            test_results
+        )
+
+        print(
+            'Test threshold: %.2f | '
+            'Acc: %.4f | AUC: %.4f | F1: %.4f | '
+            'Precision: %.4f | Recall: %.4f'
+            % (
+                threshold,
+                acc,
+                auc,
+                f1,
+                precision,
+                recall
+            )
+        )
+
+        # print('acc:{} auc:{} f1:{} precision:{} recall:{}'.format(acc, auc, f1, precision, recall))
 
         save_results_path = os.path.join(model_path, '{:.2f}'.format(acc) + '.pkl')
         if not os.path.exists(save_results_path):
             results = {'results': test_results, 'data': test_data, 'acc': acc, 'auc': auc,
                       'f1': f1, 'roc': roc, 'precision': precision, 'recall': recall,
                       'pre_recall_curve': pre_recall}
-
-        with open(save_results_path, 'wb') as fid:
-            pickle.dump(test_results, fid, pickle.HIGHEST_PROTOCOL)
+            with open(save_results_path, 'wb') as fid:
+                pickle.dump(results, fid, pickle.HIGHEST_PROTOCOL)
         return acc, auc, f1, precision, recall
 
 
