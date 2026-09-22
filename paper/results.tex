@@ -467,6 +467,86 @@ GRL + contrastive, pretrained traj.\ box & $0.489\pm0.019$ & $0.440\pm0.089$ \\
 \end{tabular}
 \end{table}
 
+\subsection{A Fine-Tuned Vision-Language Model Does Not Outperform SF-GRU}
+\label{sec:results-vlm}
+
+As a final, qualitatively different test of whether pretrained
+world-knowledge helps this task, we LoRA-fine-tune Qwen2-VL-2B-Instruct
+on a VQA-style (image-with-boxed-pedestrian, YES/NO) formulation of
+crossing-intent, trained separately on each dataset and evaluated with
+the same train-on-source/test-on-target protocol as every other result
+in this paper. Unlike the from-scratch trajectory encoder of
+Section~\ref{sec:results-pretrained-traj}, this backbone is pretrained
+on a large, source/target-independent vision-language corpus, making it
+a closer analogue to Gesnouin~et~al.'s generic-visual-backbone finding.
+We report accuracy, precision, recall, and F1 rather than AUC: the
+model is queried via greedy-decoded YES/NO generation, which yields a
+hard prediction, not a calibrated probability, so these numbers are
+\emph{not} directly comparable to the AUC figures used throughout the
+rest of this paper.
+
+In-domain accuracy is unremarkable relative to SF-GRU's in-domain AUC
+(Table~\ref{tab:baseline}): $0.808$ (PIE, $n=224$) and, on JAAD, a
+range of $0.647$--$0.824$ depending on which training checkpoint is
+selected ($n=17$, see checkpoint-selection robustness below).
+Cross-dataset, PIE~$\to$~JAAD accuracy is $0.581$ ($n=117$) with a
+severe recall collapse (recall $0.154$: the model predicts
+``not crossing'' for the large majority of samples regardless of
+ground truth). For JAAD~$\to$~PIE, JAAD's validation split is only 17
+sequences under \texttt{sample\_type=`beh'} -- the same structural
+constraint noted throughout this paper for JAAD-as-source training
+(Section~\ref{sec:results-discussion}) -- so selecting a single
+``best'' fine-tuning checkpoint by validation accuracy on 17 samples is
+itself high-variance (one flipped prediction moves accuracy by
+$\approx\!6$ percentage points). Rather than report one
+potentially-lucky checkpoint's cross-dataset number, we evaluate the
+three best checkpoints by validation accuracy (training val.\ accuracy
+$0.824$, $0.765$, $0.647$) independently on the full PIE test split
+($n=637$ each). Table~\ref{tab:vlm-topk} shows this matters: the
+checkpoint with the \emph{highest} training-time validation accuracy
+is not the one with the best cross-dataset accuracy or F1, and the
+spread across checkpoints (accuracy $0.281$--$0.474$) is large relative
+to the differences we treat as meaningful elsewhere in this paper. We
+report the mean and range across checkpoints rather than a single
+point estimate for this reason.
+
+Taken together, neither direction shows the fine-tuned VLM clearly
+outperforming SF-GRU's from-scratch cross-dataset results (accuracy is
+not directly comparable to our AUC numbers, but the severe recall
+imbalance in several cells indicates the model is often not
+discriminating well at all, independent of the choice of metric). We
+read this as a second, qualitatively different negative result for the
+``pretrained backbone rescues cross-dataset transfer'' hypothesis,
+alongside Section~\ref{sec:results-pretrained-traj}'s trajectory-encoder
+result -- though we note important differences in setup (a
+single-image, VQA-style formulation with no explicit trajectory input,
+vs.\ SF-GRU's multi-frame, multi-modality fusion) that mean this is not
+a strictly controlled comparison, only a suggestive one.
+
+\begin{table}[t]
+\centering
+\caption{VLM LoRA cross-dataset results, corrected labels. PIE$\to$JAAD
+uses a single checkpoint (PIE's validation split, $n=224$, does not
+have the small-sample selection problem JAAD's does). JAAD$\to$PIE
+reports the three best JAAD-training checkpoints by validation accuracy
+($n=17$ each), evaluated independently on PIE's full test split
+($n=637$ each). Metrics are accuracy/F1/recall from greedy-decoded
+YES/NO classification, not AUC.}
+\label{tab:vlm-topk}
+\begin{tabular}{lccc}
+\toprule
+Method & Acc. & F1 & Rec. \\
+\midrule
+PIE$\to$JAAD (single ckpt.) & $0.581$ & $0.246$ & $0.154$ \\
+\midrule
+JAAD$\to$PIE, rank 0 (best train val.) & $0.474$ & $0.394$ & $0.609$ \\
+JAAD$\to$PIE, rank 1 & $0.422$ & $0.470$ & $0.911$ \\
+JAAD$\to$PIE, rank 2 & $0.281$ & $0.439$ & $1.000$ \\
+JAAD$\to$PIE, mean$\pm$std & $0.393\pm0.082$ & $0.434\pm0.031$ & $0.840\pm0.167$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{Split Sensitivity Is Not Explained by Video-Level Leakage}
 \label{sec:results-leakage}
 
@@ -525,7 +605,14 @@ baseline (not significantly worse) on JAAD~$\to$~PIE; on
 uncertainty-weighted fusion -- the strongest unadapted baseline of any
 architecture we test -- it significantly \emph{hurts} PIE~$\to$~JAAD
 and trends down (not significant) on JAAD~$\to$~PIE. Only SF-GRU shows
-the recipe helping in both directions. We read this table as the
+the recipe helping in both directions. Table~\ref{tab:summary} reports
+AUC throughout and so excludes the VLM LoRA results
+(Section~\ref{sec:results-vlm}, which use greedy-decoded accuracy/F1
+rather than a probability score); those results are a further,
+qualitatively different negative data point -- a large pretrained
+vision-language backbone also does not clearly outperform SF-GRU's
+from-scratch cross-dataset numbers -- that this table's AUC-only format
+cannot represent alongside the rest. We read this table as the
 paper's most concise evidence for its central claim: cross-dataset
 collapse in this model family is not fixed by any single targeted
 intervention we tried except domain-adversarial training on SF-GRU

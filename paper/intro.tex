@@ -137,6 +137,12 @@ partially replicates on one (helping in one transfer direction) and
 significantly \emph{harms} the strongest unadapted baseline of the
 other, evidence we read as further support for the generic-regularizer
 account over a literal domain-invariance account.
+\item A test of whether a large, generically-pretrained
+vision-language backbone (LoRA-fine-tuned Qwen2-VL) does better at
+cross-dataset transfer than our from-scratch results, including an
+explicit checkpoint-selection robustness check given JAAD's small
+validation split -- finding no clear advantage, a second, qualitatively
+different negative result for the pretrained-backbone hypothesis.
 \end{enumerate}
 
 We view this paper's primary value as diagnostic: a small,

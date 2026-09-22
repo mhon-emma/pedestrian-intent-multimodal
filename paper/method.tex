@@ -305,6 +305,39 @@ not have local access to an external motion corpus, and report this as
 a locally-feasible approximation of the intended experiment, not an
 equivalent of it (Section~\ref{sec:results-pretrained-traj}).
 
+\subsection{Fine-Tuned Vision-Language Model}
+\label{sec:method-vlm}
+
+As a further test of whether pretrained world-knowledge aids
+cross-dataset transfer -- this time using a backbone genuinely
+pretrained on a large, source/target-independent corpus, unlike
+Section~\ref{sec:method-pretrained-traj}'s locally-pretrained
+trajectory encoder -- we LoRA-fine-tune~\cite{hu2022lora}
+Qwen2-VL-2B-Instruct~\cite{qwen2vl} (rank 16, targeting all attention
+and MLP projection matrices) on a VQA-style formulation: the model is
+shown the observation frame with the pedestrian's bounding box drawn
+on it and a fixed prompt asking whether the pedestrian will cross,
+trained to generate ``YES''/``NO'' via next-token cross-entropy on the
+answer span only. We train separately on each dataset's train split
+(minority-class oversampled to balance, matching this paper's
+\texttt{balanced=True} convention elsewhere) and evaluate with the same
+train-on-source/test-on-target protocol as every other result in this
+paper. Because the model is queried via greedy decoding, evaluation
+yields a hard YES/NO prediction rather than a calibrated probability;
+we report accuracy, precision, recall, and F1, and do not claim these
+are directly comparable to the AUC figures reported elsewhere in this
+paper.
+
+Checkpoint selection for the JAAD-trained direction requires care:
+JAAD's validation split under \texttt{sample\_type=`beh'} is only 17
+sequences (the same constraint noted for JAAD-as-source training
+throughout this paper), making a single ``best-by-validation-accuracy''
+checkpoint choice high-variance. Rather than select one checkpoint, we
+save the three best checkpoints by validation accuracy during training
+and evaluate each independently on the full cross-dataset test split,
+reporting the distribution across them rather than a single point
+estimate (Section~\ref{sec:results-vlm}).
+
 \subsection{Synthesizing a Speed Modality for JAAD}
 \label{sec:method-speed}
 
