@@ -125,7 +125,10 @@ trajectory coordinates.
 \item A domain-adversarial and contrastive training recipe that
 partially, reproducibly ($n=6$ seeds, both directions) mitigates
 cross-dataset collapse on SF-GRU, together with an honest
-characterization of how much of the original gap it leaves unclosed.
+characterization of how much of the original gap it leaves unclosed,
+and a targeted variant showing the same benefit is achieved by applying
+the domain-adversarial pressure only to the diagnosed leakage-source
+modality rather than the whole fused representation.
 \item A mechanistic probe analysis showing that this recipe's benefit
 is dissociated from -- not explained by -- the representational
 invariance it is nominally trained to induce, using controls (mixup, a

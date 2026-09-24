@@ -169,6 +169,57 @@ unusually low variance across seeds (std $0.001$ vs.\ $0.017$ for the
 same configuration without speed); we did not find an explanation for
 this and flag it as an observation rather than a claim.
 
+\subsection{Targeting the GRL at the Diagnosed Leakage Source}
+\label{sec:results-context}
+
+The headline recipe applies the GRL to the whole fused representation,
+treating every modality's contribution to domain-identity equally. The
+modality-zeroing ablation (Section~\ref{sec:results-ablation}) instead
+points to \texttt{local\_context} specifically as the modality whose
+removal helps transfer, motivating a more targeted variant: the GRL and
+domain classifier read only the \texttt{local\_context} branch's own
+hidden state (before it is concatenated into the rest of the stack),
+while the contrastive term still operates on the box branch exactly as
+in the headline recipe. This is a structural change to \emph{where} the
+domain-adversarial pressure is applied within the same SF-GRU
+architecture, not a new architecture or a new dataset requirement.
+
+Table~\ref{tab:context} shows this targeted variant matches the
+untargeted headline recipe: both directions improve significantly over
+the unadapted baseline, and neither direction differs from the
+full-representation recipe by more than pooled standard deviation
+(PIE~$\to$~JAAD: $0.617\pm0.020$ vs.\ $0.621\pm0.017$;
+JAAD~$\to$~PIE: $0.637\pm0.055$ vs.\ $0.613\pm0.071$). If anything,
+JAAD~$\to$~PIE's point estimate is slightly higher and its variance
+is lower for the targeted variant, though this difference does not
+clear pooled noise either. We read this as informative rather than as
+a new headline number: a domain-adversarial term applied narrowly to
+the diagnosed leakage source achieves the same benefit as applying it
+broadly to the entire fused representation, touching a much smaller
+part of the network to do so. This is consistent with our broader
+reading (Section~\ref{sec:results-discussion}) that the recipe's value
+lies in suppressing a specific, identifiable source of dataset-specific
+signal rather than in a diffuse, whole-representation alignment effect
+-- narrowing the intervention to that source loses nothing.
+
+\begin{table}[t]
+\centering
+\caption{Context-targeted GRL (domain classifier reads only the
+\texttt{local\_context} branch's hidden state) + box contrastive term,
+$n=6$ seeds, corrected labels. Compare against Table~\ref{tab:fixes}'s
+full-representation headline recipe.}
+\label{tab:context}
+\begin{tabular}{lcc}
+\toprule
+Method & PIE$\to$JAAD & JAAD$\to$PIE \\
+\midrule
+Baseline (Table~\ref{tab:baseline}) & $0.498\pm0.009$ & $0.402\pm0.138$ \\
+GRL + contrastive (full repr., tuned) & $0.621\pm0.017$ & $0.613\pm0.071$ \\
+GRL + contrastive (context-targeted) & $0.617\pm0.020$ & $0.637\pm0.055$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{Representational Separability Is Dissociated From Task Performance}
 \label{sec:results-probe}
 
@@ -581,31 +632,36 @@ control for).
 \label{sec:results-summary}
 
 Table~\ref{tab:summary} collects every fix attempt in this paper in one
-place, since the individual results are otherwise spread across seven
+place, since the individual results are otherwise spread across eight
 subsections written around different hypotheses, with a verdict
 computed against pooled standard deviation rather than by eye. Of the
-twelve non-baseline interventions, only the domain-adversarial family
-(GRL alone, GRL + contrastive) improves PIE~$\to$~JAAD \emph{and}
-JAAD~$\to$~PIE on the primary architecture (SF-GRU) by more than
-pooled noise in both directions. The geometry- and normalization-based
-fixes (rows 2--5) all significantly \emph{hurt} PIE~$\to$~JAAD and are
-statistically indistinguishable from baseline on JAAD~$\to$~PIE -- not
-the symmetric two-direction harm a first read of the raw numbers might
-suggest, since JAAD~$\to$~PIE's wide baseline variance (row 1;
-Section~\ref{sec:results-discussion}) absorbs differences that would
-be significant in the other direction. Synthetic speed and the
-pretrained trajectory representation (rows 10--11) both significantly
-hurt \emph{both} directions relative to the tuned headline recipe;
-mixup (row 9) is statistically indistinguishable from it in both
-directions despite its lower point estimate. Applied to the two
-alternative fusion architectures (rows 12--13), the recipe's record is
-mixed-to-negative: on cross-attention it significantly helps
+thirteen non-baseline interventions, only the domain-adversarial family
+on SF-GRU (GRL alone, GRL + contrastive full-representation, GRL +
+contrastive context-targeted) improves PIE~$\to$~JAAD \emph{and}
+JAAD~$\to$~PIE by more than pooled noise in both directions. The
+geometry- and normalization-based fixes (rows 2--5) all significantly
+\emph{hurt} PIE~$\to$~JAAD and are statistically indistinguishable
+from baseline on JAAD~$\to$~PIE -- not the symmetric two-direction harm
+a first read of the raw numbers might suggest, since JAAD~$\to$~PIE's
+wide baseline variance (row 1; Section~\ref{sec:results-discussion})
+absorbs differences that would be significant in the other direction.
+The context-targeted variant (row 9) is statistically indistinguishable
+from the full-representation recipe (row 8) in both directions
+(Section~\ref{sec:results-context}) -- narrowing the domain-adversarial
+pressure to the diagnosed leakage source loses nothing. Synthetic speed
+and the pretrained trajectory representation (rows 11--12) both
+significantly hurt \emph{both} directions relative to the tuned
+headline recipe; mixup (row 10) is statistically indistinguishable from
+it in both directions despite its lower point estimate. Applied to the
+two alternative fusion architectures (rows 13--14), the recipe's record
+is mixed-to-negative: on cross-attention it significantly helps
 PIE~$\to$~JAAD and is statistically indistinguishable from its own
 baseline (not significantly worse) on JAAD~$\to$~PIE; on
 uncertainty-weighted fusion -- the strongest unadapted baseline of any
 architecture we test -- it significantly \emph{hurts} PIE~$\to$~JAAD
 and trends down (not significant) on JAAD~$\to$~PIE. Only SF-GRU shows
-the recipe helping in both directions. Table~\ref{tab:summary} reports
+the recipe helping in both directions, whether applied broadly or
+narrowly. Table~\ref{tab:summary} reports
 AUC throughout and so excludes the VLM LoRA results
 (Section~\ref{sec:results-vlm}, which use greedy-decoded accuracy/F1
 rather than a probability score); those results are a further,
@@ -629,9 +685,9 @@ Section~\ref{sec:method-geometry}, row 5 drops the box modality
 entirely. Verdict is $\uparrow$/$\downarrow$/$\approx$ relative to the
 stated baseline, where $\approx$ means the difference is smaller than
 the two conditions' pooled standard deviation (i.e.\ not
-distinguishable at this $n$) -- rows 2--8 compare against the unadapted
-baseline (row 1); rows 9--11 compare against GRL + contrastive tuned
-(row 8); rows 12--13 compare against their own architecture's unadapted
+distinguishable at this $n$) -- rows 2--9 compare against the unadapted
+baseline (row 1); rows 10--12 compare against GRL + contrastive tuned
+(row 8); rows 13--14 compare against their own architecture's unadapted
 baseline (Tables~\ref{tab:crossattn} and~\ref{tab:uncertainty}).}
 \label{tab:summary}
 \small
@@ -647,11 +703,12 @@ Intervention & PIE$\to$JAAD & JAAD$\to$PIE & Verdict \\
 6. Contrastive only & $0.558\pm0.028$ & $0.450\pm0.107$ & $\uparrow$/$\approx$ \\
 7. GRL only & $0.608\pm0.030$ & $0.587\pm0.069$ & $\uparrow$/$\uparrow$ \\
 8. GRL+contrastive (tuned) & $\mathbf{0.621\pm0.017}$ & $\mathbf{0.613\pm0.071}$ & $\uparrow$/$\uparrow$ \\
-9.\ + mixup & $0.580\pm0.077$ & $0.537\pm0.079$ & $\approx$/$\approx$ \\
-10.\ + synth.\ speed & $0.602\pm0.001$ & $0.430\pm0.072$ & $\downarrow$/$\downarrow$ \\
-11.\ + pretrained traj.\ & $0.489\pm0.019$ & $0.440\pm0.089$ & $\downarrow$/$\downarrow$ \\
-12.\ Cross-attn.\ & $0.559\pm0.027$ & $0.446\pm0.063$ & $\uparrow$/$\approx$ \\
-13.\ Uncertainty fusion & $0.499\pm0.072$ & $0.351\pm0.060$ & $\downarrow$/$\approx$ \\
+9. GRL+contrastive (context-targeted) & $0.617\pm0.020$ & $0.637\pm0.055$ & $\uparrow$/$\uparrow$ \\
+10.\ + mixup & $0.580\pm0.077$ & $0.537\pm0.079$ & $\approx$/$\approx$ \\
+11.\ + synth.\ speed & $0.602\pm0.001$ & $0.430\pm0.072$ & $\downarrow$/$\downarrow$ \\
+12.\ + pretrained traj.\ & $0.489\pm0.019$ & $0.440\pm0.089$ & $\downarrow$/$\downarrow$ \\
+13.\ Cross-attn.\ & $0.559\pm0.027$ & $0.446\pm0.063$ & $\uparrow$/$\approx$ \\
+14.\ Uncertainty fusion & $0.499\pm0.072$ & $0.351\pm0.060$ & $\downarrow$/$\approx$ \\
 \bottomrule
 \end{tabular}
 \end{table}

@@ -198,6 +198,25 @@ follow-up grid search over $\lambda_{\text{con}} \in
 (Section~\ref{sec:results-dann}), confirming any selected configuration
 at $n=6$ seeds before reporting it as a headline number.
 
+\subsection{Context-Targeted Domain Adversarial Training}
+\label{sec:method-context}
+
+The recipe above applies the GRL to the final fused representation,
+after all four modalities have been concatenated through the stack.
+Motivated by the modality-zeroing ablation (Section~\ref{sec:results-ablation}),
+which localizes cross-dataset sensitivity to the \texttt{local\_context}
+modality specifically, we also test a variant in which the GRL and
+domain classifier instead read only the \texttt{local\_context}
+branch's own hidden state, tapped immediately after its GRU and before
+concatenation with the next modality -- a read-only tap that does not
+alter the main classification forward path. The contrastive term is
+unchanged, still operating on the box branch. This tests whether
+concentrating the domain-adversarial pressure at the diagnosed leakage
+source matches, exceeds, or falls short of regularizing the whole fused
+representation; same protocol otherwise (default contrastive
+hyperparameters, $n=6$ seeds per direction,
+Section~\ref{sec:results-context}).
+
 \subsection{Representational Invariance Probe}
 \label{sec:method-probe}
 
