@@ -121,3 +121,7 @@ paper/*.out
 
 # Personal draft, not project content
 TITAN_dataset_request_draft.txt
+
+# Raw database pickle backups (319MB, kept for the local zip archive
+# before the source databases are deleted -- not meant for git/GitHub)
+data_backup/

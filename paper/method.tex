@@ -239,6 +239,18 @@ control -- a probe given only each sample's track length, a single
 scalar carrying no pedestrian-behavior information -- to establish how
 separable PIE and JAAD are from a dataset-fingerprint statistic alone.
 
+As a check on whether \texttt{local\_context}'s measured separability
+is specific to the frozen VGG16 encoder used throughout this paper
+rather than to the surrounding-scene crop itself, we additionally
+re-extract \texttt{local\_context} using a frozen
+DINOv2~\cite{dinov2} (ViT-B/14, self-distillation pretraining --
+a different architecture and training objective from VGG16's
+supervised ImageNet classification) in place of VGG16, leaving every
+other modality unchanged. We retrain the baseline (no domain
+adaptation) classifier on PIE with this substitution and re-run the
+same linear/MLP probe on the resulting representations
+(Section~\ref{sec:results-probe}).
+
 \subsection{Second-Architecture Replication}
 \label{sec:method-crossattn}
 

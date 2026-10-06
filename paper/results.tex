@@ -278,6 +278,31 @@ GRL + contrastive (fused) & $0.953\pm0.008$ & $0.892\pm0.020$ \\
 \end{tabular}
 \end{table}
 
+\paragraph{Is the \texttt{local\_context} leakage specific to VGG16?}
+The \texttt{local\_context} branch's high separability
+($0.964$ linear, $0.851$ MLP above) is measured on features from a
+frozen, ImageNet-supervised VGG16 -- raising the question of whether
+this reflects something about the surrounding-scene crop itself or
+about VGG16's particular low-level feature statistics (e.g.\
+compression artifacts, sensor response curves) that a different
+backbone would not share. We re-extract \texttt{local\_context} using
+a frozen DINOv2~\cite{dinov2} (ViT-B/14, self-distillation pretraining,
+a different architecture family and training objective from VGG16's
+supervised classification), retrain the baseline classifier on PIE
+with this backbone in place of VGG16 for \texttt{local\_context}
+only (all other modalities unchanged), and re-run the same probe.
+In-domain performance is comparable to or better than the VGG16
+baseline (PIE test AUC $0.872$ vs.\ this paper's $0.78$--$0.88$ range
+for VGG16-backed models), ruling out a trivial ``DINOv2 just produces
+useless features here'' explanation. Separability does \emph{not}
+drop: linear accuracy is $0.974\pm0.005$ and MLP accuracy is
+$0.936\pm0.010$, both at or above the VGG16 figures. We read this as
+evidence that \texttt{local\_context}'s cross-dataset leakage is a
+property of the surrounding-scene crop itself -- PIE and JAAD's
+differing cameras, lighting, and scene composition are detectable
+through more or less any generic frozen visual encoder we tried, not
+an artifact specific to VGG16's particular feature statistics.
+
 \subsection{Partial Replication on a Second Architecture}
 \label{sec:results-crossattn}
 
